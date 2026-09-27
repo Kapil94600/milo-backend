@@ -1,0 +1,463 @@
+// ============================================
+// Subscription Service — Plans + User Subscriptions (with image upload)
+// ============================================
+
+const { prisma } = require('../config/database');
+const AppError = require('../utils/AppError');
+const helpers = require('../utils/helpers');
+const WalletService = require('./wallet.service');
+const UploadService = require('./upload.service');
+const { logInfo, logError } = require('../utils/logger');
+const { PaymentStatus } = require('../common/enums');
+
+class SubscriptionService {
+  // ============================================
+  // HELPER: Resolve image (file OR url)
+  // ============================================
+  static async resolvePlanImage(data) {
+    if (data._uploadedFile) {
+      const result = await UploadService.uploadFile(
+        data._uploadedFile,
+        'subscription-plans'
+      );
+      return result.url;
+    }
+    if (data.image && typeof data.image === 'string' && data.image.trim()) {
+      return data.image.trim();
+    }
+    return null;
+  }
+
+  // ============================================
+  // 1. CREATE PLAN (admin)
+  // ============================================
+  static async createPlan(data) {
+    const imageUrl = await this.resolvePlanImage(data);
+
+    return prisma.subscriptionPlan.create({
+      data: {
+        name: data.name,
+        description: data.description || null,
+        image: imageUrl,
+        price: data.price,
+        currency: data.currency || 'INR',
+        duration: data.duration,
+        durationDays: data.durationDays,
+        features: data.features || [],
+        freeMessages: data.freeMessages || 0,
+        freeVoiceMinutes: data.freeVoiceMinutes || 0,
+        freeVideoMinutes: data.freeVideoMinutes || 0,
+        bonusCoins: data.bonusCoins || 0,
+        discountPercent: data.discountPercent || 0,
+        prioritySupport: data.prioritySupport ?? false,
+        adFree: data.adFree ?? false,
+        isPopular: data.isPopular ?? false,
+        isActive: data.isActive ?? true,
+        order: data.order || 0,
+      },
+    });
+  }
+
+  // ============================================
+  // 2. GET PLANS (public)
+  // ============================================
+  static async getPlans(activeOnly = true) {
+    const where = { deletedAt: null };
+    if (activeOnly) where.isActive = true;
+
+    return prisma.subscriptionPlan.findMany({
+      where,
+      orderBy: [{ order: 'asc' }, { price: 'asc' }],
+    });
+  }
+
+  static async getPlanById(id) {
+    const plan = await prisma.subscriptionPlan.findUnique({ where: { id } });
+    if (!plan || plan.deletedAt) throw AppError.notFound('Plan not found');
+    return plan;
+  }
+
+  // ============================================
+  // 3. UPDATE PLAN (admin) — supports file upload
+  // ============================================
+  static async updatePlan(id, data) {
+    const existing = await prisma.subscriptionPlan.findUnique({ where: { id } });
+    if (!existing) throw AppError.notFound('Plan not found');
+
+    const allowed = [
+      'name', 'description', 'price', 'currency', 'duration', 'durationDays',
+      'features', 'freeMessages', 'freeVoiceMinutes', 'freeVideoMinutes',
+      'bonusCoins', 'discountPercent', 'prioritySupport', 'adFree',
+      'isPopular', 'isActive', 'order',
+    ];
+    const updates = helpers.pick(data, allowed);
+
+    // Handle image (file OR url)
+    if (data._uploadedFile || data.image !== undefined) {
+      updates.image = await this.resolvePlanImage(data);
+    }
+
+    return prisma.subscriptionPlan.update({ where: { id }, data: updates });
+  }
+
+  // ============================================
+  // 4. DELETE PLAN (soft)
+  // ============================================
+  static async deletePlan(id) {
+    const existing = await prisma.subscriptionPlan.findUnique({ where: { id } });
+    if (!existing) throw AppError.notFound('Plan not found');
+
+    return prisma.subscriptionPlan.update({
+      where: { id },
+      data: { deletedAt: new Date(), isActive: false },
+    });
+  }
+
+  // ============================================
+  // 5. SUBSCRIBE (user)
+  // ============================================
+  static async subscribe(userId, planId, autoRenew = false) {
+    const plan = await this.getPlanById(planId);
+    if (!plan.isActive) throw AppError.badRequest('Plan not available');
+
+    // Check if user already has active subscription
+    const existing = await prisma.subscription.findFirst({
+      where: {
+        userId,
+        isActive: true,
+        endDate: { gt: new Date() },
+        deletedAt: null,
+      },
+    });
+
+    if (existing) {
+      throw AppError.conflict('You already have an active subscription');
+    }
+
+    // Check wallet balance
+    const wallet = await WalletService.getWallet(userId);
+    if (wallet.balance < plan.price) {
+      throw AppError.badRequest(`Insufficient balance. Need ₹${plan.price}`);
+    }
+
+    const startDate = new Date();
+    const endDate = helpers.addDays(startDate, plan.durationDays);
+
+    // Create subscription + deduct money in transaction
+    const subscription = await prisma.$transaction(async (tx) => {
+      // Deduct money
+      await tx.wallet.update({
+        where: { userId },
+        data: {
+          balance: { decrement: plan.price },
+          totalSpent: { increment: plan.price },
+        },
+      });
+
+      // Transaction log
+      await tx.transaction.create({
+        data: {
+          userId,
+          type: 'DEBIT',
+          category: 'SUBSCRIPTION',
+          amount: plan.price,
+          coins: 0,
+          description: `Subscribed to ${plan.name}`,
+          status: 'COMPLETED',
+          referenceModel: 'SubscriptionPlan',
+          referenceId: plan.id,
+        },
+      });
+
+      // Create subscription
+      const sub = await tx.subscription.create({
+        data: {
+          userId,
+          planId: plan.id,
+          startDate,
+          endDate,
+          isActive: true,
+          autoRenew,
+          paymentStatus: 'COMPLETED',
+          amount: plan.price,
+          currency: plan.currency,
+          features: {
+            freeMessages: plan.freeMessages,
+            freeVoiceMinutes: plan.freeVoiceMinutes,
+            freeVideoMinutes: plan.freeVideoMinutes,
+            bonusCoins: plan.bonusCoins,
+            discountPercent: plan.discountPercent,
+            prioritySupport: plan.prioritySupport,
+            adFree: plan.adFree,
+          },
+          usage: {
+            messagesUsed: 0,
+            voiceMinutesUsed: 0,
+            videoMinutesUsed: 0,
+            coinsUsed: 0,
+          },
+        },
+        include: { plan: true },
+      });
+
+      // Add bonus coins if any
+      if (plan.bonusCoins > 0) {
+        const updated = await tx.wallet.update({
+          where: { userId },
+          data: {
+            coins: { increment: plan.bonusCoins },
+            totalEarned: { increment: plan.bonusCoins },
+          },
+        });
+
+        await tx.transaction.create({
+          data: {
+            userId,
+            type: 'CREDIT',
+            category: 'SUBSCRIPTION',
+            amount: 0,
+            coins: plan.bonusCoins,
+            description: `Bonus coins from ${plan.name}`,
+            status: 'COMPLETED',
+            balanceAfter: updated.balance,
+            coinsAfter: updated.coins,
+            referenceModel: 'Subscription',
+            referenceId: sub.id,
+          },
+        });
+      }
+
+      return sub;
+    });
+
+    logInfo(`User ${userId} subscribed to ${plan.name}`);
+    return subscription;
+  }
+
+  // ============================================
+  // 6. GET MY SUBSCRIPTION (active)
+  // ============================================
+  static async getActiveSubscription(userId) {
+    return prisma.subscription.findFirst({
+      where: {
+        userId,
+        isActive: true,
+        endDate: { gt: new Date() },
+        deletedAt: null,
+      },
+      include: { plan: true },
+    });
+  }
+
+  // ============================================
+  // 7. GET MY SUBSCRIPTIONS (history)
+  // ============================================
+  static async getMySubscriptions(userId, { page = 1, limit = 20 } = {}) {
+    const skip = (page - 1) * limit;
+
+    const [subscriptions, total] = await Promise.all([
+      prisma.subscription.findMany({
+        where: { userId, deletedAt: null },
+        include: { plan: true },
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: limit,
+      }),
+      prisma.subscription.count({ where: { userId, deletedAt: null } }),
+    ]);
+
+    return {
+      data: subscriptions,
+      pagination: helpers.buildPagination(page, limit, total),
+    };
+  }
+
+  // ============================================
+  // 8. CANCEL SUBSCRIPTION
+  // ============================================
+  static async cancelSubscription(userId) {
+    const sub = await prisma.subscription.findFirst({
+      where: {
+        userId,
+        isActive: true,
+        endDate: { gt: new Date() },
+      },
+    });
+
+    if (!sub) throw AppError.notFound('No active subscription');
+
+    return prisma.subscription.update({
+      where: { id: sub.id },
+      data: {
+        autoRenew: false,
+        cancelledAt: new Date(),
+      },
+    });
+  }
+
+  // ============================================
+  // 9. CHECK ACTIVE SUBSCRIPTION
+  // ============================================
+  static async hasActiveSubscription(userId) {
+    const count = await prisma.subscription.count({
+      where: {
+        userId,
+        isActive: true,
+        endDate: { gt: new Date() },
+        deletedAt: null,
+      },
+    });
+    return count > 0;
+  }
+
+  // ============================================
+  // 10. UPDATE USAGE
+  // ============================================
+  static async updateUsage(userId, type, amount = 1) {
+    const sub = await prisma.subscription.findFirst({
+      where: {
+        userId,
+        isActive: true,
+        endDate: { gt: new Date() },
+      },
+    });
+
+    if (!sub) return null;
+
+    const usage = sub.usage || {
+      messagesUsed: 0,
+      voiceMinutesUsed: 0,
+      videoMinutesUsed: 0,
+      coinsUsed: 0,
+    };
+
+    if (type === 'message') usage.messagesUsed = (usage.messagesUsed || 0) + amount;
+    else if (type === 'voice') usage.voiceMinutesUsed = (usage.voiceMinutesUsed || 0) + amount;
+    else if (type === 'video') usage.videoMinutesUsed = (usage.videoMinutesUsed || 0) + amount;
+    else if (type === 'coins') usage.coinsUsed = (usage.coinsUsed || 0) + amount;
+
+    return prisma.subscription.update({
+      where: { id: sub.id },
+      data: { usage },
+    });
+  }
+
+  // ============================================
+  // 11. RENEW EXPIRING (cron job)
+  // ============================================
+  static async checkAndRenewSubscriptions() {
+    const now = new Date();
+    const tomorrow = helpers.addDays(now, 1);
+
+    const expiring = await prisma.subscription.findMany({
+      where: {
+        isActive: true,
+        autoRenew: true,
+        endDate: { gt: now, lte: tomorrow },
+        deletedAt: null,
+      },
+      include: { plan: true },
+    });
+
+    let renewed = 0;
+    let failed = 0;
+
+    for (const sub of expiring) {
+      try {
+        const wallet = await WalletService.getWallet(sub.userId);
+
+        if (wallet.balance >= sub.plan.price) {
+          const newEnd = helpers.addDays(sub.endDate, sub.plan.durationDays);
+
+          await prisma.$transaction(async (tx) => {
+            await tx.wallet.update({
+              where: { userId: sub.userId },
+              data: {
+                balance: { decrement: sub.plan.price },
+                totalSpent: { increment: sub.plan.price },
+              },
+            });
+
+            await tx.transaction.create({
+              data: {
+                userId: sub.userId,
+                type: 'DEBIT',
+                category: 'SUBSCRIPTION',
+                amount: sub.plan.price,
+                coins: 0,
+                description: `Auto-renewal: ${sub.plan.name}`,
+                status: 'COMPLETED',
+              },
+            });
+
+            await tx.subscription.update({
+              where: { id: sub.id },
+              data: {
+                startDate: sub.endDate,
+                endDate: newEnd,
+                paymentStatus: 'COMPLETED',
+              },
+            });
+          });
+
+          renewed++;
+        } else {
+          await prisma.subscription.update({
+            where: { id: sub.id },
+            data: { autoRenew: false },
+          });
+          failed++;
+        }
+      } catch (e) {
+        logError(`Auto-renewal failed for ${sub.id}`, e);
+        failed++;
+      }
+    }
+
+    return { renewed, failed };
+  }
+
+  // ============================================
+  // 12. GET STATS (admin)
+  // ============================================
+  static async getStats() {
+    const [active, expired, total, revenue] = await Promise.all([
+      prisma.subscription.count({
+        where: { isActive: true, endDate: { gt: new Date() } },
+      }),
+      prisma.subscription.count({
+        where: { endDate: { lt: new Date() } },
+      }),
+      prisma.subscription.count(),
+      prisma.subscription.aggregate({
+        where: { paymentStatus: 'COMPLETED' },
+        _sum: { amount: true },
+      }),
+    ]);
+
+    return {
+      active,
+      expired,
+      total,
+      totalRevenue: revenue._sum.amount || 0,
+    };
+  }
+
+  // ============================================
+  // 13. GET PLAN SUBSCRIPTIONS (admin)
+  // ============================================
+  static async getPlanSubscriptions(planId) {
+    return prisma.subscription.findMany({
+      where: {
+        planId,
+        isActive: true,
+        endDate: { gt: new Date() },
+      },
+      include: {
+        user: { select: { id: true, name: true, phone: true, email: true } },
+      },
+    });
+  }
+}
+
+module.exports = SubscriptionService;

@@ -1,0 +1,1217 @@
+// ============================================
+// Prisma Schema - Social Platform Backend
+// Database: PostgreSQL
+// ============================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================
+// ENUMS
+// ============================================
+
+enum Role {
+  USER
+  GIRL
+  ADMIN
+}
+
+enum Status {
+  ACTIVE
+  INACTIVE
+  BLOCKED
+  DELETED
+}
+
+enum Gender {
+  MALE
+  FEMALE
+  OTHER
+  PREFER_NOT_TO_SAY
+}
+
+enum Platform {
+  ANDROID
+  IOS
+  WEB
+  ALL
+}
+
+enum TransactionType {
+  CREDIT
+  DEBIT
+}
+enum TransactionCategory {
+  SIGNUP_BONUS
+  REFERRAL_BONUS
+  DAILY_BONUS
+  COIN_PURCHASE
+  SUBSCRIPTION
+  MESSAGE_COST
+  VOICE_CALL
+  VIDEO_CALL
+  CALL_EARNING
+  CHAT_EARNING
+  GIFT_SENT
+  GIFT_RECEIVED
+  WITHDRAWAL
+  REFUND
+  PROMO_CODE
+  REWARD
+  ADMIN_ADD
+}
+enum PaymentStatus {
+  PENDING
+  COMPLETED
+  FAILED
+  REFUNDED
+}
+
+enum WithdrawStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  COMPLETED
+}
+
+enum NotificationType {
+  CHAT
+  CALL
+  COIN
+  SYSTEM
+  PROMO
+  REWARD
+}
+
+enum NotificationChannel {
+  IN_APP
+  PUSH
+  EMAIL
+  SMS
+  BOTH
+}
+
+enum NotificationPriority {
+  LOW
+  NORMAL
+  HIGH
+}
+
+enum CallType {
+  VOICE
+  VIDEO
+}
+
+enum CallStatus {
+  INITIATED
+  CONNECTED
+  ENDED
+  MISSED
+  REJECTED
+  CANCELLED
+  FAILED
+}
+
+enum CallQuality {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+enum MessageType {
+  TEXT
+  IMAGE
+  VIDEO
+  AUDIO
+  GIF
+  FILE
+  STICKER
+}
+
+enum ChatType {
+  DIRECT
+  GROUP
+}
+
+enum ReportType {
+  USER
+  MESSAGE
+  CHAT
+  CALL
+  PROFILE
+  PAYMENT
+  OTHER
+}
+
+enum ReportStatus {
+  PENDING
+  REVIEWED
+  RESOLVED
+  REJECTED
+}
+
+enum ReportPriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+enum ReportAction {
+  WARNING
+  SUSPEND
+  BAN
+  DELETE
+  IGNORE
+  OTHER
+}
+
+enum VerificationStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum GiftCategory {
+  FLOWERS
+  HEARTS
+  STARS
+  ANIMALS
+  FOOD
+  LUXURY
+  EMOJI
+  SPECIAL
+  OTHER
+}
+
+enum GiftRarity {
+  COMMON
+  UNCOMMON
+  RARE
+  EPIC
+  LEGENDARY
+}
+
+enum SubscriptionDuration {
+  DAILY
+  WEEKLY
+  MONTHLY
+  QUARTERLY
+  YEARLY
+}
+
+enum PromoType {
+  PERCENTAGE
+  FIXED
+  FREE_COINS
+  FREE_SUBSCRIPTION
+}
+
+enum ReferralStatus {
+  PENDING
+  COMPLETED
+  EXPIRED
+  REWARDED
+}
+
+enum SupportCategory {
+  ACCOUNT
+  PAYMENT
+  TECHNICAL
+  REPORT
+  FEEDBACK
+  WITHDRAWAL
+  COINS
+  CALLS
+  CHAT
+  SUBSCRIPTION
+  OTHER
+}
+
+enum SupportPriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+enum SupportStatus {
+  OPEN
+  IN_PROGRESS
+  RESOLVED
+  CLOSED
+  REOPENED
+}
+
+enum MaintenanceType {
+  SCHEDULED
+  EMERGENCY
+  UPDATE
+}
+
+enum BannerLinkType {
+  URL
+  PAGE
+  PRODUCT
+  USER
+  GIRL
+  SUBSCRIPTION
+  COIN_PACKAGE
+  NONE
+}
+
+enum AuthAction {
+  LOGIN
+  LOGOUT
+  REGISTER
+  REFRESH
+  OTP_REQUEST
+  OTP_VERIFY
+}
+
+enum AuditStatus {
+  SUCCESS
+  FAILED
+}
+
+// ============================================
+// MODELS
+// ============================================
+
+// ---------- USER ----------
+model User {
+  id              String    @id @default(cuid())
+  phone           String    @unique
+  email           String?   @unique
+  name            String
+  username        String?   @unique
+  password        String?
+  role            Role      @default(USER)
+  profileImage    String?
+  coverImage      String?
+  bio             String?   @db.Text
+  birthDate       DateTime?
+  gender          Gender    @default(PREFER_NOT_TO_SAY)
+  address         String?
+  city            String?
+  country         String?
+  latitude        Float?
+  longitude       Float?
+  isActive        Boolean   @default(true)
+  isVerified      Boolean   @default(false)
+  isOnline        Boolean   @default(false)
+  lastSeen        DateTime  @default(now())
+  lastLogin       DateTime?
+  refreshToken    String?   @db.Text
+  referralCode    String?   @unique
+  status          Status    @default(ACTIVE)
+  fcmToken        String?   @db.Text
+  language        String    @default("en")
+  darkMode        Boolean   @default(false)
+
+  // Stats
+  totalCoins      Int       @default(0)
+  totalEarnings   Float     @default(0)
+  totalSpent      Float     @default(0)
+  totalCalls      Int       @default(0)
+  totalMessages   Int       @default(0)
+  totalVoiceMins  Int       @default(0)
+  totalVideoMins  Int       @default(0)
+  totalReferrals  Int       @default(0)
+
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  deletedAt       DateTime?
+
+  // Relations
+  girl            Girl?
+  admin           Admin?
+  wallet          Wallet?
+  sentMessages    Message[] @relation("SentMessages")
+  chats           ChatParticipant[]
+  callsMade       Call[]    @relation("CallerCalls")
+  callsReceived   Call[]    @relation("ReceiverCalls")
+  transactions    Transaction[]
+  sentGifts       GiftTransaction[] @relation("GiftSender")
+  receivedGifts   GiftTransaction[] @relation("GiftReceiver")
+  notifications   Notification[]
+  reportsMade     Report[]  @relation("Reporter")
+  reportsAgainst  Report[]  @relation("Reported")
+  blockedUsers    BlockedUser[] @relation("Blocker")
+  blockedBy       BlockedUser[] @relation("Blocked")
+  favorites       Favorite[] @relation("Favoriter")
+  favoritedBy     Favorite[] @relation("Favorited")
+  referralsMade   Referral[] @relation("Referrer")
+  referredBy      Referral?  @relation("Referred")
+  subscriptions   Subscription[]
+  supportTickets  SupportTicket[]
+  reviewsGiven    Review[]   @relation("Reviewer")
+  reviewsReceived Review[]   @relation("Reviewed")
+  promoUsages     PromoUsage[]
+  authLogs        AuthLog[]
+  auditLogs       AuditLog[]
+  withdrawals     Withdrawal[]
+  devices         Device[]
+   girlRequest         GirlRequest?  @relation("GirlRequestUser")
+  reviewedRequests    GirlRequest[] @relation("GirlRequestReviewer")
+
+  @@index([phone])
+  @@index([email])
+  @@index([role, status])
+  @@index([isOnline, lastSeen])
+  @@index([city])
+  @@map("users")
+}
+// ============================================
+// GIRL REQUESTS — Onboarding Applications
+// ============================================
+model GirlRequest {
+  id              String    @id @default(cuid())
+  userId          String    @unique
+  about           String    @db.Text
+  categories      String[]
+  languages       String[]
+  specialties     String[]
+  hourlyRate      Float     @default(100)
+  status          String    @default("PENDING") @db.VarChar(20)
+  rejectionReason String?   @db.Text
+  reviewedById    String?
+  reviewedAt      DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  deletedAt       DateTime?
+
+  user User @relation("GirlRequestUser", fields: [userId], references: [id], onDelete: Cascade)
+  reviewedBy User? @relation("GirlRequestReviewer", fields: [reviewedById], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([status])
+  @@index([createdAt])
+  @@map("girl_requests")
+}
+// ---------- GIRL PROFILE ----------
+model Girl {
+  id                    String    @id @default(cuid())
+  userId                String    @unique
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  isOnline              Boolean   @default(false)
+  isAvailable           Boolean   @default(true)
+  acceptChat            Boolean   @default(true)
+  acceptCalls           Boolean   @default(true)
+  isVerified            Boolean   @default(false)
+  isFeatured            Boolean   @default(false)
+
+  // Verification
+  idProofUrl            String?
+  selfieUrl             String?
+  verificationStatus    VerificationStatus @default(PENDING)
+
+  // Profile
+  categories            String[]
+  languages             String[]
+  specialties           String[]
+  about                 String?   @db.Text
+  hourlyRate            Float     @default(0)
+
+  // Social
+  instagramUrl          String?
+  youtubeUrl            String?
+  twitterUrl            String?
+
+  // Stats
+  rating                Float     @default(0)
+  totalReviews          Int       @default(0)
+  totalCalls            Int       @default(0)
+  totalVoiceMins        Int       @default(0)
+  totalVideoMins        Int       @default(0)
+  totalMessages         Int       @default(0)
+  totalCoinsEarned      Int       @default(0)
+
+  // Earnings
+  earningsTotal         Float     @default(0)
+  earningsToday         Float     @default(0)
+  earningsThisWeek      Float     @default(0)
+  earningsThisMonth     Float     @default(0)
+
+  status                Status    @default(ACTIVE)
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+  deletedAt             DateTime?
+
+  @@index([userId])
+  @@index([isOnline, isAvailable])
+  @@index([rating])
+  @@index([status])
+  @@map("girls")
+}
+
+// ---------- ADMIN ----------
+model Admin {
+  id             String    @id @default(cuid())
+  userId         String    @unique
+  user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role           String    @default("ADMIN")  // SUPER_ADMIN, ADMIN, MODERATOR
+
+  // Permissions
+  canManageUsers         Boolean @default(true)
+  canManageGirls         Boolean @default(true)
+  canManageCoins         Boolean @default(true)
+  canManagePayments      Boolean @default(true)
+  canManageSubscriptions Boolean @default(true)
+  canManageSettings      Boolean @default(true)
+  canManageReports       Boolean @default(true)
+  canManageNotifications Boolean @default(true)
+  canViewAnalytics       Boolean @default(true)
+  canManageAdmins        Boolean @default(false)
+
+  lastActive     DateTime  @default(now())
+  status         Status    @default(ACTIVE)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  deletedAt      DateTime?
+
+  loginHistory   AdminLoginHistory[]
+
+  @@index([userId])
+  @@index([role])
+  @@map("admins")
+}
+
+model AdminLoginHistory {
+  id         String   @id @default(cuid())
+  adminId    String
+  admin      Admin    @relation(fields: [adminId], references: [id], onDelete: Cascade)
+  ip         String?
+  userAgent  String?  @db.Text
+  createdAt  DateTime @default(now())
+
+  @@index([adminId, createdAt])
+  @@map("admin_login_history")
+}
+
+// ---------- DEVICE ----------
+model Device {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  token      String   @unique @db.Text
+  platform   String?  // ios, android, web
+  deviceId   String?
+  model      String?
+  version    String?
+  isActive   Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([userId])
+  @@map("devices")
+}
+
+// ---------- OTP ----------
+model Otp {
+  id         String   @id @default(cuid())
+  phone      String
+  otp        String
+  purpose    String   @default("LOGIN")
+  attempts   Int      @default(0)
+  isUsed     Boolean  @default(false)
+  expiresAt  DateTime
+  ip         String?
+  userAgent  String?  @db.Text
+  createdAt  DateTime @default(now())
+
+  @@index([phone, isUsed])
+  @@index([expiresAt])
+  @@map("otps")
+}
+
+// ---------- WALLET ----------
+model Wallet {
+  id                String    @id @default(cuid())
+  userId            String    @unique
+  user              User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  balance           Float     @default(0)
+  coins             Int       @default(0)
+  totalEarned       Float     @default(0)
+  totalSpent        Float     @default(0)
+  totalWithdrawn    Float     @default(0)
+  pendingBalance    Float     @default(0)
+  currency          String    @default("INR")
+  isActive          Boolean   @default(true)
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  deletedAt         DateTime?
+
+  @@index([userId])
+  @@map("wallets")
+}
+
+// ---------- TRANSACTION ----------
+model Transaction {
+  id              String              @id @default(cuid())
+  userId          String
+  user            User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type            TransactionType
+  category        TransactionCategory
+  amount          Float               @default(0)
+  coins           Int                 @default(0)
+  description     String              @db.Text
+  status          PaymentStatus       @default(COMPLETED)
+  balanceAfter    Float?
+  coinsAfter      Int?
+  referenceId     String?
+  referenceModel  String?
+  idempotencyKey  String?             @unique
+  gatewayResponse Json?
+  failureReason   String?             @db.Text
+  ip              String?
+  userAgent       String?             @db.Text
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+  deletedAt       DateTime?
+
+  @@index([userId, createdAt])
+  @@index([type, category])
+  @@index([status])
+  @@map("transactions")
+}
+
+// ---------- WITHDRAWAL ----------
+model Withdrawal {
+  id             String          @id @default(cuid())
+  userId         String
+  user           User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  amount         Float
+  fee            Float           @default(0)
+  netAmount      Float
+  status         WithdrawStatus  @default(PENDING)
+  method         String          // BANK, UPI, PAYPAL
+  accountName    String?
+  accountNumber  String?
+  ifscCode       String?
+  upiId          String?
+  bankName       String?
+  processedBy    String?
+  processedAt    DateTime?
+  failureReason  String?         @db.Text
+  gatewayResponse Json?
+  requestedAt    DateTime        @default(now())
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  @@index([userId, status])
+  @@index([status, createdAt])
+  @@map("withdrawals")
+}
+
+// ---------- COIN PACKAGE ----------
+model CoinPackage {
+  id          String    @id @default(cuid())
+  name        String
+  description String?   @db.Text
+  image       String?   // ✅ YE LINE ADD KARO
+  coins       Int
+  bonusCoins  Int       @default(0)
+  price       Float
+  currency    String    @default("INR")
+  discount    Float     @default(0)
+  isPopular   Boolean   @default(false)
+  isActive    Boolean   @default(true)
+  order       Int       @default(0)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  deletedAt   DateTime?
+
+  @@index([isActive])
+  @@map("coin_packages")
+}
+// ---------- SUBSCRIPTION ----------
+// ============================================
+// SUBSCRIPTION PLANS
+// ============================================
+model SubscriptionPlan {
+  id                  String               @id @default(cuid())
+  name                String
+  description         String?              @db.Text
+  image               String?              // ✅ NEW
+  price               Float
+  currency            String               @default("INR")
+  duration            SubscriptionDuration
+  durationDays        Int
+  features            String[]
+  freeMessages        Int                  @default(0)
+  freeVoiceMinutes    Int                  @default(0)
+  freeVideoMinutes    Int                  @default(0)
+  bonusCoins          Int                  @default(0)
+  discountPercent     Float                @default(0)
+  prioritySupport     Boolean              @default(false)
+  adFree              Boolean              @default(false)
+  isPopular           Boolean              @default(false)
+  isActive            Boolean              @default(true)
+  order               Int                  @default(0)
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+  deletedAt           DateTime?
+
+  subscriptions Subscription[]
+
+  @@index([isActive])
+  @@map("subscription_plans")
+}
+
+model Subscription {
+  id             String              @id @default(cuid())
+  userId         String
+  user           User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  planId         String
+  plan           SubscriptionPlan    @relation(fields: [planId], references: [id])
+  startDate      DateTime            @default(now())
+  endDate        DateTime
+  isActive       Boolean             @default(true)
+  autoRenew      Boolean             @default(false)
+  paymentStatus  PaymentStatus       @default(PENDING)
+  paymentId      String?
+  amount         Float
+  currency       String              @default("INR")
+  features       Json?
+  usage          Json?
+  cancelledAt    DateTime?
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+  deletedAt      DateTime?
+
+  @@index([userId, isActive])
+  @@index([endDate])
+  @@map("subscriptions")
+}
+
+// ---------- PROMO ----------
+// ============================================
+// PROMO CODES
+// ============================================
+model PromoCode {
+  id                  String    @id @default(cuid())
+  code                String    @unique
+  description         String    @db.Text
+  image               String?   // ✅ NEW
+  type                PromoType
+  value               Float
+  maxDiscount         Float?
+  minOrderAmount      Float     @default(0)
+  maxUses             Int       @default(0)
+  usedCount           Int       @default(0)
+  perUserLimit        Int       @default(1)
+  startDate           DateTime  @default(now())
+  endDate             DateTime?
+  isActive            Boolean   @default(true)
+  applicableRoles     String[]
+  applicableProducts  String[]
+  createdBy           String?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+  deletedAt           DateTime?
+
+  usages PromoUsage[]
+
+  @@index([code, isActive])
+  @@map("promo_codes")
+}
+
+model PromoUsage {
+  id         String    @id @default(cuid())
+  promoId    String
+  promo      PromoCode @relation(fields: [promoId], references: [id], onDelete: Cascade)
+  userId     String
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  discount   Float
+  orderId    String?
+  usedAt     DateTime  @default(now())
+
+  @@index([userId, promoId])
+  @@map("promo_usages")
+}
+
+// ---------- REFERRAL ----------
+model Referral {
+  id              String          @id @default(cuid())
+  referrerId      String
+  referrer        User            @relation("Referrer", fields: [referrerId], references: [id], onDelete: Cascade)
+  referredId      String          @unique
+  referred        User            @relation("Referred", fields: [referredId], references: [id], onDelete: Cascade)
+  referralCode    String
+  status          ReferralStatus  @default(PENDING)
+  reward          Float           @default(0)
+  coinsRewarded   Int             @default(0)
+  moneyRewarded   Float           @default(0)
+  completedAt     DateTime?
+  rewardedAt      DateTime?
+  conditionsMet   Boolean         @default(false)
+  referrerIp      String?
+  referredIp      String?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+  deletedAt       DateTime?
+
+  @@index([referrerId])
+  @@index([status])
+  @@map("referrals")
+}
+
+// ---------- CHAT ----------
+model Chat {
+  id              String            @id @default(cuid())
+  type            ChatType          @default(DIRECT)
+  name            String?
+  image           String?
+  description     String?           @db.Text
+  groupAdminId    String?
+  lastMessageId   String?
+  lastMessageAt   DateTime          @default(now())
+  isActive        Boolean           @default(true)
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+  deletedAt       DateTime?
+
+  participants    ChatParticipant[]
+  messages        Message[]
+
+  @@index([lastMessageAt])
+  @@map("chats")
+}
+
+model ChatParticipant {
+  id            String   @id @default(cuid())
+  chatId        String
+  chat          Chat     @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  userId        String
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  isAdmin       Boolean  @default(false)
+  unreadCount   Int      @default(0)
+  isMuted       Boolean  @default(false)
+  isArchived    Boolean  @default(false)
+  lastReadAt    DateTime?
+  joinedAt      DateTime @default(now())
+
+  @@unique([chatId, userId])
+  @@index([userId])
+  @@map("chat_participants")
+}
+
+model Message {
+  id              String        @id @default(cuid())
+  chatId          String
+  chat            Chat          @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  senderId        String
+  sender          User          @relation("SentMessages", fields: [senderId], references: [id], onDelete: Cascade)
+  content         String        @db.Text
+  type            MessageType   @default(TEXT)
+  mediaUrl        String?
+  replyToId       String?
+  isDelivered     Boolean       @default(false)
+  deliveredAt     DateTime?
+  isRead          Boolean       @default(false)
+  readAt          DateTime?
+  isEdited        Boolean       @default(false)
+  editedAt        DateTime?
+  isDeletedForAll Boolean       @default(false)
+  deletedFor      String[]
+  clientMessageId String?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  deletedAt       DateTime?
+
+  reactions       MessageReaction[]
+
+  @@index([chatId, createdAt])
+  @@index([senderId])
+  @@map("messages")
+}
+
+model MessageReaction {
+  id         String   @id @default(cuid())
+  messageId  String
+  message    Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  userId     String
+  reaction   String   @default("👍")
+  createdAt  DateTime @default(now())
+
+  @@unique([messageId, userId])
+  @@map("message_reactions")
+}
+
+// ---------- CALL ----------
+model Call {
+  id             String       @id @default(cuid())
+  callerId       String
+  caller         User         @relation("CallerCalls", fields: [callerId], references: [id], onDelete: Cascade)
+  receiverId     String
+  receiver       User         @relation("ReceiverCalls", fields: [receiverId], references: [id], onDelete: Cascade)
+  type           CallType
+  status         CallStatus   @default(INITIATED)
+  quality        CallQuality  @default(MEDIUM)
+  startedAt      DateTime     @default(now())
+  endedAt        DateTime?
+  duration       Int          @default(0)
+  cost           Float        @default(0)
+  coinRate       Int          @default(0)
+  paymentStatus  PaymentStatus @default(PENDING)
+  recordingUrl   String?
+  recordingSize  Int?
+  endedById      String?
+  metadata       Json?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  deletedAt      DateTime?
+
+  @@index([callerId, createdAt])
+  @@index([receiverId, createdAt])
+  @@index([status])
+  @@map("calls")
+}
+
+// ---------- GIFT ----------
+model Gift {
+  id             String        @id @default(cuid())
+  name           String
+  description    String?
+  image          String
+  thumbnail      String?
+  animationUrl   String?
+  soundUrl       String?
+  coins          Int
+  price          Float
+  category       GiftCategory  @default(OTHER)
+  rarity         GiftRarity    @default(COMMON)
+  isActive       Boolean       @default(true)
+  isFeatured     Boolean       @default(false)
+  displayOrder   Int           @default(0)
+  totalSent      Int           @default(0)
+  createdBy      String?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+  deletedAt      DateTime?
+
+  transactions   GiftTransaction[]
+
+  @@index([isActive])
+  @@map("gifts")
+}
+
+model GiftTransaction {
+  id             String        @id @default(cuid())
+  giftId         String
+  gift           Gift          @relation(fields: [giftId], references: [id])
+  senderId       String
+  sender         User          @relation("GiftSender", fields: [senderId], references: [id], onDelete: Cascade)
+  receiverId     String
+  receiver       User          @relation("GiftReceiver", fields: [receiverId], references: [id], onDelete: Cascade)
+  chatId         String?
+  coins          Int
+  price          Float
+  receiverCoins  Int           @default(0)
+  message        String?
+  isAnonymous    Boolean       @default(false)
+  isRead         Boolean       @default(false)
+  readAt         DateTime?
+  status         PaymentStatus @default(COMPLETED)
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+  deletedAt      DateTime?
+
+  @@index([senderId, createdAt])
+  @@index([receiverId, createdAt])
+  @@map("gift_transactions")
+}
+
+// ---------- NOTIFICATION ----------
+model Notification {
+  id           String               @id @default(cuid())
+  userId       String
+  user         User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  senderId     String?
+  type         NotificationType
+  title        String
+  body         String               @db.Text
+  image        String?
+  data         Json?
+  action       String?
+  actionData   Json?
+  priority     NotificationPriority @default(NORMAL)
+  channel      NotificationChannel  @default(IN_APP)
+  isRead       Boolean              @default(false)
+  readAt       DateTime?
+  isDelivered  Boolean              @default(false)
+  deliveredAt  DateTime?
+  fcmMessageId String?
+  clickedAt    DateTime?
+  createdAt    DateTime             @default(now())
+  updatedAt    DateTime             @updatedAt
+  deletedAt    DateTime?
+
+  @@index([userId, isRead])
+  @@index([userId, createdAt])
+  @@map("notifications")
+}
+
+// ---------- REPORT ----------
+model Report {
+  id              String          @id @default(cuid())
+  reporterId      String
+  reporter        User            @relation("Reporter", fields: [reporterId], references: [id], onDelete: Cascade)
+  reportedId      String
+  reported        User            @relation("Reported", fields: [reportedId], references: [id], onDelete: Cascade)
+  type            ReportType
+  category        String
+  description     String          @db.Text
+  evidence        String[]
+  status          ReportStatus    @default(PENDING)
+  priority        ReportPriority  @default(MEDIUM)
+  assignedToId    String?
+  reviewedById    String?
+  reviewedAt      DateTime?
+  resolution      String?         @db.Text
+  resolutionAction ReportAction?
+  adminNotes      String?         @db.Text
+  ipAddress       String?
+  userAgent       String?         @db.Text
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+  deletedAt       DateTime?
+
+  @@index([reporterId])
+  @@index([reportedId])
+  @@index([status, priority])
+  @@map("reports")
+}
+
+// ---------- BLOCKED ----------
+model BlockedUser {
+  id          String    @id @default(cuid())
+  userId      String
+  user        User      @relation("Blocker", fields: [userId], references: [id], onDelete: Cascade)
+  blockedId   String
+  blocked     User      @relation("Blocked", fields: [blockedId], references: [id], onDelete: Cascade)
+  reason      String?
+  isPermanent Boolean   @default(true)
+  expiresAt   DateTime?
+  createdAt   DateTime  @default(now())
+  deletedAt   DateTime?
+
+  @@unique([userId, blockedId])
+  @@index([userId])
+  @@map("blocked_users")
+}
+
+// ---------- FAVORITE ----------
+model Favorite {
+  id          String    @id @default(cuid())
+  userId      String
+  user        User      @relation("Favoriter", fields: [userId], references: [id], onDelete: Cascade)
+  favoriteId  String
+  favorite    User      @relation("Favorited", fields: [favoriteId], references: [id], onDelete: Cascade)
+  notes       String?
+  createdAt   DateTime  @default(now())
+  deletedAt   DateTime?
+
+  @@unique([userId, favoriteId])
+  @@index([userId])
+  @@map("favorites")
+}
+
+// ---------- REVIEW ----------
+model Review {
+  id          String    @id @default(cuid())
+  reviewerId  String
+  reviewer    User      @relation("Reviewer", fields: [reviewerId], references: [id], onDelete: Cascade)
+  reviewedId  String
+  reviewed    User      @relation("Reviewed", fields: [reviewedId], references: [id], onDelete: Cascade)
+  rating      Int
+  comment     String?   @db.Text
+  callId      String?
+  isAnonymous Boolean   @default(false)
+  isVisible   Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  deletedAt   DateTime?
+
+  @@index([reviewedId])
+  @@map("reviews")
+}
+
+// ---------- SUPPORT TICKET ----------
+model SupportTicket {
+  id             String          @id @default(cuid())
+  userId         String
+  user           User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  ticketNumber   String          @unique
+  subject        String
+  category       SupportCategory
+  priority       SupportPriority @default(MEDIUM)
+  status         SupportStatus   @default(OPEN)
+  description    String          @db.Text
+  attachments    String[]
+  assignedToId   String?
+  resolvedAt     DateTime?
+  closedAt       DateTime?
+  resolution     String?         @db.Text
+  rating         Int?
+  feedback       String?         @db.Text
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+  deletedAt      DateTime?
+
+  messages       SupportMessage[]
+
+  @@index([userId])
+  @@index([status, priority])
+  @@map("support_tickets")
+}
+
+model SupportMessage {
+  id          String        @id @default(cuid())
+  ticketId    String
+  ticket      SupportTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  senderId    String
+  senderRole  String        @default("USER")
+  message     String        @db.Text
+  attachments String[]
+  isInternal  Boolean       @default(false)
+  createdAt   DateTime      @default(now())
+
+  @@index([ticketId])
+  @@map("support_messages")
+}
+
+// ---------- SETTINGS ----------
+model Setting {
+  id          String    @id @default(cuid())
+  key         String    @unique
+  value       Json
+  type        String    // STRING, NUMBER, BOOLEAN, OBJECT, ARRAY
+  category    String
+  description String?
+  isEditable  Boolean   @default(true)
+  updatedBy   String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  deletedAt   DateTime?
+
+  @@index([category])
+  @@map("settings")
+}
+
+// ---------- BANNER ----------
+model Banner {
+  id           String          @id @default(cuid())
+  title        String
+  subtitle     String?
+  image        String
+  linkType     BannerLinkType  @default(NONE)
+  link         String?
+  linkData     Json?
+  position     Int             @default(0)
+  displayOrder Int             @default(0)
+  isActive     Boolean         @default(true)
+  isFeatured   Boolean         @default(false)
+  startDate    DateTime        @default(now())
+  endDate      DateTime?
+  platform     String[]        @default(["ALL"])
+  roles        String[]        @default(["ALL"])
+  clickCount   Int             @default(0)
+  viewCount    Int             @default(0)
+  createdBy    String?
+  updatedBy    String?
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+  deletedAt    DateTime?
+
+  @@index([isActive])
+  @@map("banners")
+}
+
+// ---------- APP VERSION ----------
+model AppVersion {
+  id              String    @id @default(cuid())
+  version         String
+  platform        Platform
+  minVersion      String
+  requiredVersion String
+  downloadUrl     String?
+  releaseNotes    String?   @db.Text
+  isMandatory     Boolean   @default(false)
+  isLatest        Boolean   @default(true)
+  releasedAt      DateTime  @default(now())
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  deletedAt       DateTime?
+
+  @@unique([platform, version])
+  @@index([platform, isLatest])
+  @@map("app_versions")
+}
+
+// ---------- MAINTENANCE ----------
+model Maintenance {
+  id               String           @id @default(cuid())
+  isEnabled        Boolean          @default(false)
+  message          String           @db.Text
+  type             MaintenanceType  @default(SCHEDULED)
+  scheduledStart   DateTime?
+  scheduledEnd     DateTime?
+  startedAt        DateTime?
+  endedAt          DateTime?
+  affectedServices String[]
+  updatedBy        String?
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+  deletedAt        DateTime?
+
+  @@map("maintenance")
+}
+
+// ---------- AUTH LOG ----------
+model AuthLog {
+  id         String     @id @default(cuid())
+  userId     String?
+  user       User?      @relation(fields: [userId], references: [id], onDelete: SetNull)
+  phone      String
+  action     AuthAction
+  status     AuditStatus
+  error      String?    @db.Text
+  ip         String?
+  userAgent  String?    @db.Text
+  deviceInfo Json?
+  createdAt  DateTime   @default(now())
+
+  @@index([userId, createdAt])
+  @@index([phone, createdAt])
+  @@map("auth_logs")
+}
+
+// ---------- AUDIT LOG ----------
+model AuditLog {
+  id          String      @id @default(cuid())
+  userId      String?
+  user        User?       @relation(fields: [userId], references: [id], onDelete: SetNull)
+  action      String
+  resource    String
+  resourceId  String?
+  changes     Json?
+  status      AuditStatus @default(SUCCESS)
+  error       String?     @db.Text
+  metadata    Json?
+  ip          String?
+  userAgent   String?     @db.Text
+  createdAt   DateTime    @default(now())
+
+  @@index([userId, createdAt])
+  @@index([action, createdAt])
+  @@index([resource, resourceId])
+  @@map("audit_logs")
+}
