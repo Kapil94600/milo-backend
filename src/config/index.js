@@ -71,12 +71,12 @@ const config = {
   MAX_FILE_SIZE_MB: parseInt(process.env.MAX_FILE_SIZE_MB || '10', 10),
 
   // Cloudinary
-  CLOUDINARY: {
-    CLOUD_NAME: process.env.CLOUDINARY_CLOUD_NAME || '',
-    API_KEY: process.env.CLOUDINARY_API_KEY || '',
-    API_SECRET: process.env.CLOUDINARY_API_SECRET || '',
-    FOLDER: process.env.CLOUDINARY_FOLDER || 'social-platform',
-  },
+ CLOUDINARY: {
+  CLOUD_NAME: process.env.CLOUDINARY_CLOUD_NAME || '',
+  API_KEY: process.env.CLOUDINARY_API_KEY || '',
+  API_SECRET: process.env.CLOUDINARY_API_SECRET || '',
+  FOLDER: process.env.CLOUDINARY_FOLDER || 'social-platform',
+},
 
   // Firebase
   FIREBASE: {

@@ -7,7 +7,7 @@ const AuthService = require('../services/auth.service');
 const ApiResponse = require('../utils/response');
 
 // ============================================
-// POST /auth/request-otp
+// POST /auth/request-otp  (LEGACY — MSG91 flow)
 // ============================================
 const requestOTP = asyncHandler(async (req, res) => {
   const { phone } = req.body;
@@ -24,7 +24,7 @@ const requestOTP = asyncHandler(async (req, res) => {
 });
 
 // ============================================
-// POST /auth/verify-otp
+// POST /auth/verify-otp  (LEGACY — MSG91 flow)
 // ============================================
 const verifyOTP = asyncHandler(async (req, res) => {
   const { phone, otp, deviceInfo } = req.body;
@@ -35,6 +35,23 @@ const verifyOTP = asyncHandler(async (req, res) => {
     req.headers['user-agent'],
     deviceInfo
   );
+  return ApiResponse.success(res, result, 'Login successful');
+});
+
+// ============================================
+// ✅ NEW: POST /auth/firebase-login
+// Body: { idToken, deviceInfo }
+// ============================================
+const firebaseLogin = asyncHandler(async (req, res) => {
+  const { idToken, deviceInfo } = req.body;
+
+  const result = await AuthService.firebaseLogin(
+    idToken,
+    req.ip,
+    req.headers['user-agent'],
+    deviceInfo
+  );
+
   return ApiResponse.success(res, result, 'Login successful');
 });
 
@@ -103,6 +120,7 @@ const me = asyncHandler(async (req, res) => {
 module.exports = {
   requestOTP,
   verifyOTP,
+  firebaseLogin,  // ✅ NEW
   refreshToken,
   logout,
   logoutAll,

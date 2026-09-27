@@ -1,5 +1,5 @@
 // ============================================
-// Auth Service — OTP, JWT, Register, Login
+// Auth Service — OTP, JWT, Register, Login, Firebase
 // ============================================
 
 const jwt = require('jsonwebtoken');
@@ -13,10 +13,11 @@ const { ROLES, OTP_PURPOSE, AuthAction, AuditStatus } = require('../common/enums
 const WalletService = require('./wallet.service');
 const SmsService = require('./sms.service');
 const EmailService = require('./email.service');
+const { verifyFirebaseToken, isFirebaseAvailable } = require('../config/firebase');
 
 class AuthService {
   // ============================================
-  // 1. REQUEST OTP
+  // 1. REQUEST OTP (LEGACY — MSG91)
   // ============================================
   static async generateOTP(phone, ip = null, userAgent = null) {
     if (!helpers.isValidPhone(phone)) {
@@ -25,7 +26,6 @@ class AuthService {
 
     const normalizedPhone = helpers.normalizePhone(phone);
 
-    // Rate limit: max 5 OTPs per phone in last 15 min
     const recentCount = await prisma.otp.count({
       where: {
         phone: normalizedPhone,
@@ -37,11 +37,9 @@ class AuthService {
       throw AppError.tooMany('Too many OTP requests. Please wait 15 minutes.');
     }
 
-    // Generate OTP
     const otp = helpers.generateOTP(config.OTP_LENGTH);
     const expiresAt = new Date(Date.now() + config.OTP_EXPIRE * 1000);
 
-    // Save OTP
     await prisma.otp.create({
       data: {
         phone: normalizedPhone,
@@ -53,7 +51,6 @@ class AuthService {
       },
     });
 
-    // Log
     const existingUser = await prisma.user.findUnique({
       where: { phone: normalizedPhone },
       select: { id: true },
@@ -70,7 +67,6 @@ class AuthService {
       },
     });
 
-    // Send SMS
     await SmsService.sendOTP(normalizedPhone, otp);
 
     logInfo(`OTP generated for ${normalizedPhone}`);
@@ -79,7 +75,7 @@ class AuthService {
   }
 
   // ============================================
-  // 2. VERIFY OTP & LOGIN
+  // 2. VERIFY OTP (LEGACY — MSG91)
   // ============================================
   static async verifyOTP(phone, otp, ip = null, userAgent = null, deviceInfo = null) {
     if (!helpers.isValidPhone(phone)) {
@@ -91,7 +87,6 @@ class AuthService {
 
     const normalizedPhone = helpers.normalizePhone(phone);
 
-    // Find latest valid OTP
     const otpRecord = await prisma.otp.findFirst({
       where: {
         phone: normalizedPhone,
@@ -106,7 +101,6 @@ class AuthService {
       throw AppError.badRequest('OTP expired or invalid');
     }
 
-    // Wrong OTP
     if (otpRecord.otp !== otp) {
       const newAttempts = otpRecord.attempts + 1;
 
@@ -125,13 +119,57 @@ class AuthService {
       throw AppError.badRequest('Invalid OTP');
     }
 
-    // Mark OTP as used
     await prisma.otp.update({
       where: { id: otpRecord.id },
       data: { isUsed: true },
     });
 
-    // Find or create user
+    return this._loginOrCreateUser(normalizedPhone, deviceInfo, ip, userAgent);
+  }
+
+  // ============================================
+  // ✅ 3. FIREBASE LOGIN (NEW)
+  // ============================================
+  static async firebaseLogin(idToken, ip = null, userAgent = null, deviceInfo = null) {
+    if (!idToken) {
+      throw AppError.badRequest('Firebase ID token is required');
+    }
+
+    if (!isFirebaseAvailable()) {
+      throw AppError.badRequest('Firebase not configured on server');
+    }
+
+    // ✅ Verify Firebase ID token
+    let decoded;
+    try {
+      decoded = await verifyFirebaseToken(idToken);
+    } catch (error) {
+      await this.logAuthAction(null, null, AuthAction.LOGIN, AuditStatus.FAILED, 'Firebase token invalid', ip, userAgent);
+      throw AppError.unauthorized('Invalid Firebase token');
+    }
+
+    // ✅ Extract phone number
+    const phoneNumber = decoded.phone_number;
+    if (!phoneNumber) {
+      throw AppError.badRequest('Firebase token does not contain phone number');
+    }
+
+    // ✅ Normalize: "+919876543210" → "9876543210"
+    const normalizedPhone = helpers.normalizePhone(phoneNumber);
+
+    if (!helpers.isValidPhone(normalizedPhone)) {
+      throw AppError.badRequest('Invalid phone number in Firebase token');
+    }
+
+    logInfo(`Firebase login: ${normalizedPhone} (uid: ${decoded.uid})`);
+
+    return this._loginOrCreateUser(normalizedPhone, deviceInfo, ip, userAgent, decoded.uid);
+  }
+
+  // ============================================
+  // ✅ HELPER: Login or Create User (shared by verifyOTP & firebaseLogin)
+  // ============================================
+  static async _loginOrCreateUser(normalizedPhone, deviceInfo, ip, userAgent, firebaseUid = null) {
     let user = await prisma.user.findUnique({
       where: { phone: normalizedPhone },
       include: { wallet: true },
@@ -142,7 +180,6 @@ class AuthService {
     if (!user) {
       isNewUser = true;
 
-      // Create user + wallet + signup bonus
       const referralCode = helpers.generateReferralCode('USER');
 
       user = await prisma.$transaction(async (tx) => {
@@ -164,7 +201,6 @@ class AuthService {
         return newUser;
       });
 
-      // Signup bonus
       if (config.BUSINESS.SIGNUP_BONUS_COINS > 0) {
         await WalletService.addCoins(
           user.id,
@@ -174,25 +210,21 @@ class AuthService {
         );
       }
 
-      // Welcome email (fire-and-forget)
       if (user.email) {
         EmailService.sendWelcome(user).catch((e) => logError('Welcome email failed', e));
       }
 
       await this.logAuthAction(user.id, normalizedPhone, AuthAction.REGISTER, AuditStatus.SUCCESS, null, ip, userAgent);
-      logInfo(`New user registered: ${normalizedPhone}`);
+      logInfo(`New user registered via ${firebaseUid ? 'Firebase' : 'OTP'}: ${normalizedPhone}`);
     }
 
-    // Check blocked/inactive
     if (!user.isActive || user.status === 'BLOCKED') {
       await this.logAuthAction(user.id, normalizedPhone, AuthAction.LOGIN, AuditStatus.FAILED, 'Account blocked', ip, userAgent);
       throw AppError.forbidden('Account is blocked or inactive');
     }
 
-    // Generate tokens
     const tokens = await this.generateTokens(user);
 
-    // Update user
     await prisma.user.update({
       where: { id: user.id },
       data: {
@@ -203,7 +235,6 @@ class AuthService {
       },
     });
 
-    // Save device if fcmToken
     if (deviceInfo?.fcmToken) {
       await prisma.device.upsert({
         where: { token: deviceInfo.fcmToken },
@@ -228,7 +259,6 @@ class AuthService {
 
     await this.logAuthAction(user.id, normalizedPhone, AuthAction.LOGIN, AuditStatus.SUCCESS, null, ip, userAgent);
 
-    // Sanitize
     const userData = this.sanitizeUser(user);
 
     return {
@@ -239,7 +269,7 @@ class AuthService {
   }
 
   // ============================================
-  // 3. GENERATE TOKENS
+  // 4. GENERATE TOKENS
   // ============================================
   static async generateTokens(user) {
     const payload = {
@@ -259,7 +289,6 @@ class AuthService {
       { expiresIn: config.REFRESH_TOKEN_EXPIRE }
     );
 
-    // Save refresh token
     await prisma.user.update({
       where: { id: user.id },
       data: { refreshToken },
@@ -269,7 +298,7 @@ class AuthService {
   }
 
   // ============================================
-  // 4. REFRESH ACCESS TOKEN
+  // 5. REFRESH ACCESS TOKEN
   // ============================================
   static async refreshAccessToken(refreshToken, ip = null, userAgent = null) {
     if (!refreshToken) {
@@ -305,7 +334,7 @@ class AuthService {
   }
 
   // ============================================
-  // 5. LOGOUT
+  // 6. LOGOUT
   // ============================================
   static async logout(userId, ip = null, userAgent = null) {
     const user = await prisma.user.findUnique({ where: { id: userId } });
@@ -327,7 +356,7 @@ class AuthService {
   }
 
   // ============================================
-  // 6. LOGOUT ALL DEVICES
+  // 7. LOGOUT ALL DEVICES
   // ============================================
   static async logoutAll(userId, ip = null, userAgent = null) {
     const user = await prisma.user.findUnique({ where: { id: userId } });
@@ -353,7 +382,7 @@ class AuthService {
   }
 
   // ============================================
-  // 7. CREATE ADMIN (with secret key)
+  // 8. CREATE ADMIN
   // ============================================
   static async createAdmin({ phone, email, name, password, secretKey }) {
     if (secretKey !== config.ADMIN_SECRET_KEY) {
@@ -374,7 +403,6 @@ class AuthService {
 
     const normalizedPhone = helpers.normalizePhone(phone);
 
-    // Check existing
     const existing = await prisma.user.findFirst({
       where: {
         OR: [{ phone: normalizedPhone }, { email }],
@@ -387,7 +415,6 @@ class AuthService {
 
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    // Create user + admin + wallet in transaction
     const result = await prisma.$transaction(async (tx) => {
       const user = await tx.user.create({
         data: {
@@ -418,7 +445,7 @@ class AuthService {
   }
 
   // ============================================
-  // 8. LOG AUTH ACTION
+  // 9. LOG AUTH ACTION
   // ============================================
   static async logAuthAction(userId, phone, action, status, error = null, ip = null, userAgent = null) {
     try {
@@ -439,7 +466,7 @@ class AuthService {
   }
 
   // ============================================
-  // 9. SANITIZE USER
+  // 10. SANITIZE USER
   // ============================================
   static sanitizeUser(user) {
     if (!user) return null;

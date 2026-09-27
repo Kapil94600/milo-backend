@@ -18,12 +18,12 @@ const initCloudinary = () => {
 
   try {
     cloudinary = require('cloudinary').v2;
-    cloudinary.config({
-      cloud_name: CLOUD_NAME,
-      api_key: API_KEY,
-      api_secret: API_SECRET,
-      secure: true,
-    });
+ cloudinary.config({
+  cloud_name: config.CLOUDINARY.CLOUD_NAME,
+  api_key: config.CLOUDINARY.API_KEY,
+  api_secret: config.CLOUDINARY.API_SECRET,
+  secure: true,
+});
     cloudinaryReady = true;
     console.log('✅ Cloudinary initialized');
     return cloudinary;
