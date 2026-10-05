@@ -1,5 +1,5 @@
 // ============================================
-// File Upload (Multer)
+// File Upload (Multer) — Bond (Complete)
 // ============================================
 
 const multer = require('multer');
@@ -9,13 +9,17 @@ const crypto = require('crypto');
 const config = require('../config');
 const AppError = require('../utils/AppError');
 
+// ============================================
 // Ensure upload dir exists
+// ============================================
 const uploadRoot = path.resolve(process.cwd(), config.UPLOAD_DIR);
 if (!fs.existsSync(uploadRoot)) {
   fs.mkdirSync(uploadRoot, { recursive: true });
 }
 
+// ============================================
 // Sub-folders
+// ============================================
 const subFolders = [
   'profiles',
   'covers',
@@ -28,12 +32,15 @@ const subFolders = [
   'subscription-plans',
   'temp',
 ];
+
 for (const sub of subFolders) {
   const dir = path.join(uploadRoot, sub);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 }
 
+// ============================================
 // Storage
+// ============================================
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
     let folder = 'temp';
@@ -50,7 +57,9 @@ const storage = multer.diskStorage({
   },
 });
 
+// ============================================
 // File filters
+// ============================================
 const imageFilter = (req, file, cb) => {
   const allowed = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/gif'];
   if (allowed.includes(file.mimetype)) return cb(null, true);
@@ -64,9 +73,28 @@ const videoFilter = (req, file, cb) => {
 };
 
 const audioFilter = (req, file, cb) => {
-  const allowed = ['audio/mpeg', 'audio/wav', 'audio/ogg', 'audio/m4a', 'audio/mp4'];
+  const allowed = [
+    'audio/mpeg',
+    'audio/mp3',
+    'audio/wav',
+    'audio/ogg',
+    'audio/m4a',
+    'audio/mp4',
+    'audio/x-m4a',
+    'audio/aac',
+    'audio/3gpp',
+    'audio/webm',
+  ];
+
+  if (!file.mimetype || file.mimetype === 'application/octet-stream') {
+    const ext = path.extname(file.originalname).toLowerCase();
+    if (['.m4a', '.mp3', '.wav', '.ogg', '.aac', '.3gp', '.webm'].includes(ext)) {
+      return cb(null, true);
+    }
+  }
+
   if (allowed.includes(file.mimetype)) return cb(null, true);
-  cb(new AppError('Only audio files are allowed', 400), false);
+  cb(new AppError(`Only audio files are allowed. Got: ${file.mimetype}`, 400), false);
 };
 
 const documentFilter = (req, file, cb) => {
@@ -74,40 +102,97 @@ const documentFilter = (req, file, cb) => {
     'application/pdf',
     'application/msword',
     'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-    'image/jpeg', 'image/jpg', 'image/png',
+    'image/jpeg',
+    'image/jpg',
+    'image/png',
   ];
   if (allowed.includes(file.mimetype)) return cb(null, true);
   cb(new AppError('Only PDF, DOC, JPG, PNG allowed', 400), false);
 };
 
-const mediaFilter = (req, file, cb) => {
+// ⭐ CHAT MEDIA — IMAGES + VIDEOS + AUDIO
+const chatMediaFilter = (req, file, cb) => {
   const allowed = [
-    'image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/gif',
-    'video/mp4', 'video/webm', 'video/quicktime',
+    // Images
+    'image/jpeg',
+    'image/jpg',
+    'image/png',
+    'image/webp',
+    'image/gif',
+    // Videos
+    'video/mp4',
+    'video/webm',
+    'video/quicktime',
+    // Audio
+    'audio/mpeg',
+    'audio/mp3',
+    'audio/wav',
+    'audio/ogg',
+    'audio/m4a',
+    'audio/mp4',
+    'audio/x-m4a',
+    'audio/aac',
+    'audio/3gpp',
+    'audio/webm',
   ];
+
+  // Fallback: check extension
+  if (!file.mimetype || file.mimetype === 'application/octet-stream') {
+    const ext = path.extname(file.originalname).toLowerCase();
+    if (
+      [
+        '.jpg', '.jpeg', '.png', '.webp', '.gif',
+        '.mp4', '.webm', '.mov',
+        '.m4a', '.mp3', '.wav', '.ogg', '.aac', '.3gp',
+      ].includes(ext)
+    ) {
+      return cb(null, true);
+    }
+  }
+
   if (allowed.includes(file.mimetype)) return cb(null, true);
-  cb(new AppError('Only images and videos are allowed', 400), false);
+  cb(
+    new AppError('Only images, videos, and audio are allowed in chat', 400),
+    false
+  );
 };
 
+// ============================================
 // Limits
+// ============================================
 const limits = {
   fileSize: config.MAX_FILE_SIZE_MB * 1024 * 1024,
   files: 5,
 };
 
-// Exported upload instances
+// ============================================
+// Upload instances
+// ============================================
 const upload = multer({ storage, limits });
 const uploadImage = multer({ storage, fileFilter: imageFilter, limits });
 const uploadVideo = multer({ storage, fileFilter: videoFilter, limits });
 const uploadAudio = multer({ storage, fileFilter: audioFilter, limits });
 const uploadDocument = multer({ storage, fileFilter: documentFilter, limits });
-const uploadMedia = multer({ storage, fileFilter: mediaFilter, limits });
+const uploadChatMedia = multer({
+  storage,
+  fileFilter: chatMediaFilter,
+  limits,
+});
+// Legacy alias
+const uploadMedia = uploadChatMedia;
 
+// ============================================
 // Multer error wrapper
+// ============================================
 const handleMulterError = (err, req, res, next) => {
   if (err instanceof multer.MulterError) {
     if (err.code === 'LIMIT_FILE_SIZE') {
-      return next(new AppError(`File too large. Max ${config.MAX_FILE_SIZE_MB}MB allowed`, 400));
+      return next(
+        new AppError(
+          `File too large. Max ${config.MAX_FILE_SIZE_MB}MB allowed`,
+          400
+        )
+      );
     }
     if (err.code === 'LIMIT_FILE_COUNT') {
       return next(new AppError('Too many files', 400));
@@ -120,13 +205,17 @@ const handleMulterError = (err, req, res, next) => {
   next(err);
 };
 
+// ============================================
+// ⭐ MODULE EXPORTS (ye neeche hai)
+// ============================================
 module.exports = {
   upload,
   uploadImage,
   uploadVideo,
   uploadAudio,
   uploadDocument,
-  uploadMedia,
+  uploadChatMedia, // ⭐ NEW
+  uploadMedia, // legacy alias
   handleMulterError,
   uploadRoot,
   subFolders,

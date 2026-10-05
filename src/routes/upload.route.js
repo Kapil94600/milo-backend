@@ -1,23 +1,29 @@
 // ============================================
-// Upload Routes
+// Upload Routes — Bond (Complete)
 // ============================================
 
 const express = require('express');
 const UploadController = require('../controllers/upload.controller');
 const { authenticate, requireAdmin } = require('../middleware/auth');
-const { uploadImage: uploadImageMw, uploadMedia, handleMulterError } = require('../middleware/upload');
+const {
+  uploadImage: uploadImageMw,
+  uploadChatMedia,
+  handleMulterError,
+} = require('../middleware/upload');
 const { uploadLimiter } = require('../middleware/rateLimiter');
 
 const router = express.Router();
 
-// Folder setter middleware
+// ============================================
+// Folder setter
+// ============================================
 const setFolder = (folder) => (req, res, next) => {
   req.uploadFolder = folder;
   next();
 };
 
 // ============================================
-// Public-safe uploads (require auth)
+// All routes require authentication
 // ============================================
 router.use(authenticate);
 
@@ -40,7 +46,7 @@ router.post(
   UploadController.uploadImages
 );
 
-// ─── Profile / Cover (user) ───
+// ─── Profile / Cover ───
 router.post(
   '/profile',
   uploadLimiter,
@@ -59,7 +65,7 @@ router.post(
   UploadController.uploadImage
 );
 
-// ─── Verification docs (user) ───
+// ─── Verification docs ───
 router.post(
   '/verification',
   uploadLimiter,
@@ -69,18 +75,28 @@ router.post(
   UploadController.uploadImage
 );
 
-// ─── Chat media (image/video) ───
+// ⭐ CHAT MEDIA (image / video / audio) — NEW filter
 router.post(
   '/chat',
   uploadLimiter,
   setFolder('chats'),
-  uploadMedia.single('file'),
+  uploadChatMedia.single('file'),
+  handleMulterError,
+  UploadController.uploadImage
+);
+
+// ⭐ AUDIO only (legacy, kept for backward compat)
+router.post(
+  '/audio',
+  uploadLimiter,
+  setFolder('chats'),
+  uploadChatMedia.single('file'),
   handleMulterError,
   UploadController.uploadImage
 );
 
 // ============================================
-// ADMIN-ONLY uploads
+// ADMIN-only uploads
 // ============================================
 router.post(
   '/banner',

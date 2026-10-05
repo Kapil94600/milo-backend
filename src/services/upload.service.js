@@ -1,100 +1,144 @@
 // ============================================
-// Upload Service — Local + Cloudinary
+// Upload Service — Bond (Complete)
 // ============================================
 
-const path = require('path');
-const fs = require('fs');
-const config = require('../config');
-const AppError = require('../utils/AppError');
-const { uploadToCloudinary, deleteFromCloudinary } = require('../config/cloudinary');
-const { logInfo, logError } = require('../utils/logger');
+import api from './api';
 
-class UploadService {
+export const uploadService = {
   // ============================================
-  // Upload single file
+  // Upload single image
   // ============================================
-  static async uploadFile(file, folder = 'temp') {
-    if (!file) throw AppError.badRequest('No file provided');
+  uploadImage: async (asset, folder = 'temp') => {
+    try {
+      const formData = new FormData();
+      formData.append('image', {
+        uri: asset.uri,
+        type: asset.mimeType || 'image/jpeg',
+        name: asset.fileName || 'image.jpg',
+      });
 
-    // Cloudinary (if configured)
-    if (config.CLOUDINARY.CLOUD_NAME && config.CLOUDINARY.API_KEY && config.CLOUDINARY.API_SECRET) {
-      try {
-        const cloudFolder = `${config.CLOUDINARY.FOLDER}/${folder}`;
-        const result = await uploadToCloudinary(file.path, cloudFolder);
+      const res = await api.post(`/upload/${folder}`, formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+        timeout: 60000,
+      });
 
-        try {
-          fs.unlinkSync(file.path);
-        } catch {}
+      return res.data?.data;
+    } catch (error) {
+      console.error('Upload image error:', error);
+      throw error;
+    }
+  },
 
-        return {
-          url: result.url,
-          publicId: result.publicId,
-          filename: file.filename,
-          size: file.size,
-          mimetype: file.mimetype,
-          storage: 'cloudinary',
-        };
-      } catch (error) {
-        logError('Cloudinary upload failed, falling back to local', error);
+  // ============================================
+  // ⭐ Upload chat media (image / video / audio)
+  // ============================================
+  uploadChatMedia: async (asset) => {
+    try {
+      const formData = new FormData();
+
+      // Detect type
+      const isVideo = asset.type === 'video';
+      const isAudio = asset.type === 'audio';
+
+      // Determine MIME
+      let mimeType = asset.mimeType;
+      let fileName = asset.fileName;
+
+      if (!mimeType || mimeType === 'application/octet-stream') {
+        if (isAudio) {
+          mimeType = 'audio/m4a';
+          fileName = fileName || `voice-${Date.now()}.m4a`;
+        } else if (isVideo) {
+          mimeType = 'video/mp4';
+          fileName = fileName || `video-${Date.now()}.mp4`;
+        } else {
+          mimeType = 'image/jpeg';
+          fileName = fileName || `image-${Date.now()}.jpg`;
+        }
       }
+
+      // Ensure filename has extension
+      if (!fileName || !fileName.includes('.')) {
+        const ext = isAudio ? '.m4a' : isVideo ? '.mp4' : '.jpg';
+        fileName = `${asset.type || 'file'}-${Date.now()}${ext}`;
+      }
+
+      console.log('📤 Uploading chat media:', {
+        type: asset.type,
+        mimeType,
+        fileName,
+        uri: asset.uri,
+      });
+
+      // ⭐ KEY: field name must be 'file' (matches backend multer.single('file'))
+      formData.append('file', {
+        uri: asset.uri,
+        type: mimeType,
+        name: fileName,
+      });
+
+      const res = await api.post('/upload/chat', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+        timeout: 180000, // 3 min for large videos
+      });
+
+      return res.data?.data;
+    } catch (error) {
+      console.error(
+        'Upload chat media error:',
+        error.response?.data || error.message
+      );
+      throw error;
     }
-
-    // Local storage
-    const relativeUrl = `/uploads/${folder}/${file.filename}`;
-    const absoluteUrl = this.buildAbsoluteUrl(relativeUrl);
-
-    return {
-      url: absoluteUrl,
-      relativeUrl,
-      filename: file.filename,
-      size: file.size,
-      mimetype: file.mimetype,
-      storage: 'local',
-    };
-  }
+  },
 
   // ============================================
-  // Upload multiple files
+  // Upload profile image
   // ============================================
-  static async uploadFiles(files, folder = 'temp') {
-    if (!files || files.length === 0) {
-      throw AppError.badRequest('No files provided');
+  uploadProfileImage: async (asset) => {
+    try {
+      const formData = new FormData();
+      formData.append('image', {
+        uri: asset.uri,
+        type: asset.mimeType || 'image/jpeg',
+        name: 'profile.jpg',
+      });
+
+      const res = await api.post('/upload/profile', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+        timeout: 60000,
+      });
+
+      return res.data?.data;
+    } catch (error) {
+      console.error('Upload profile error:', error);
+      throw error;
     }
-    return Promise.all(files.map((file) => this.uploadFile(file, folder)));
-  }
+  },
 
   // ============================================
-  // Delete file
+  // Upload verification documents
   // ============================================
-  static async deleteFile(publicId, storage = 'cloudinary') {
-    if (storage === 'cloudinary') {
-      try {
-        await deleteFromCloudinary(publicId);
-      } catch {}
+  uploadVerification: async (asset, type = 'idProof') => {
+    try {
+      const formData = new FormData();
+      formData.append('file', {
+        uri: asset.uri,
+        type: asset.mimeType || 'image/jpeg',
+        name: `${type}.jpg`,
+      });
+
+      const res = await api.post('/upload/verification', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+        timeout: 60000,
+      });
+
+      return res.data?.data;
+    } catch (error) {
+      console.error('Upload verification error:', error);
+      throw error;
     }
-    return { message: 'File deleted' };
-  }
+  },
+};
 
-  // ============================================
-  // Helpers
-  // ============================================
-  static buildAbsoluteUrl(relativeUrl) {
-    if (!relativeUrl) return null;
-    if (relativeUrl.startsWith('http')) return relativeUrl;
-
-    const baseUrl =
-      process.env.PUBLIC_BASE_URL ||
-      (config.IS_PRODUCTION
-        ? `https://api.${config.APP_NAME.toLowerCase()}.com`
-        : `http://localhost:${config.PORT}`);
-
-    return `${baseUrl}${relativeUrl}`;
-  }
-
-  static normalizeImageUrl(url) {
-    if (!url) return null;
-    return this.buildAbsoluteUrl(url);
-  }
-}
-
-module.exports = UploadService;
+export default uploadService;
