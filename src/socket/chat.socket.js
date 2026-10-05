@@ -7,23 +7,31 @@ const ChatService = require('../services/chat.service');
 const { logInfo, logError } = require('../utils/logger');
 const { SOCKET_EVENTS } = require('../common/constants');
 
-// Track online users in a Map (userId -> socketId)
-// This will be passed from socket/index.js
+// Track online users in a Map (userId -> Set<socketId>)
 let connectedUsers = null;
 
 const setConnectedUsers = (map) => {
   connectedUsers = map;
 };
 
-const registerChatHandlers = (io, socket) => {
+// ============================================
+// Register Chat Handlers
+// ============================================
+const registerChatHandlers = (io, socket, helpers = {}) => {
   const userId = socket.data.userId;
   const user = socket.data.user;
+  const { getUserSocketId, isUserOnline } = helpers;
 
   // ============================================
   // JOIN CHAT ROOM
   // ============================================
   socket.on(SOCKET_EVENTS.CHAT_JOIN, async ({ chatId }) => {
     try {
+      if (!chatId) {
+        socket.emit(SOCKET_EVENTS.ERROR, { message: 'chatId is required' });
+        return;
+      }
+
       // Verify user is participant
       await ChatService.getChatById(chatId, userId);
 
@@ -40,9 +48,11 @@ const registerChatHandlers = (io, socket) => {
   // LEAVE CHAT ROOM
   // ============================================
   socket.on(SOCKET_EVENTS.CHAT_LEAVE, ({ chatId }) => {
-    socket.leave(`chat:${chatId}`);
-    socket.emit(SOCKET_EVENTS.CHAT_LEFT, { chatId });
-    logInfo(`User ${userId} left chat ${chatId}`);
+    if (chatId) {
+      socket.leave(`chat:${chatId}`);
+      socket.emit(SOCKET_EVENTS.CHAT_LEFT, { chatId });
+      logInfo(`User ${userId} left chat ${chatId}`);
+    }
   });
 
   // ============================================
@@ -50,11 +60,17 @@ const registerChatHandlers = (io, socket) => {
   // ============================================
   socket.on(SOCKET_EVENTS.CHAT_MESSAGE, async (data) => {
     try {
-      const { chatId, content, type, mediaUrl, replyToId, tempId } = data;
+      const { chatId, content, type, mediaUrl, replyToId, tempId } = data || {};
 
+      if (!chatId) {
+        socket.emit(SOCKET_EVENTS.ERROR, { message: 'chatId is required' });
+        return;
+      }
+
+      // Send message via service (handles coin deduction + girl earning)
       const message = await ChatService.sendMessage(chatId, userId, {
         content,
-        type,
+        type: type || 'TEXT',
         mediaUrl,
         replyToId,
       });
@@ -87,6 +103,7 @@ const registerChatHandlers = (io, socket) => {
   // TYPING START
   // ============================================
   socket.on(SOCKET_EVENTS.TYPING_START, ({ chatId }) => {
+    if (!chatId) return;
     socket.to(`chat:${chatId}`).emit(SOCKET_EVENTS.TYPING_START, {
       chatId,
       userId,
@@ -98,6 +115,7 @@ const registerChatHandlers = (io, socket) => {
   // TYPING STOP
   // ============================================
   socket.on(SOCKET_EVENTS.TYPING_STOP, ({ chatId }) => {
+    if (!chatId) return;
     socket.to(`chat:${chatId}`).emit(SOCKET_EVENTS.TYPING_STOP, {
       chatId,
       userId,
@@ -105,10 +123,12 @@ const registerChatHandlers = (io, socket) => {
   });
 
   // ============================================
-  // MESSAGE SEEN
+  // MESSAGE SEEN / CHAT OPENED
   // ============================================
   socket.on(SOCKET_EVENTS.CHAT_OPENED, async ({ chatId }) => {
     try {
+      if (!chatId) return;
+
       const result = await ChatService.markAsRead(chatId, userId);
 
       // Notify other participants
@@ -127,7 +147,8 @@ const registerChatHandlers = (io, socket) => {
   // ============================================
   socket.on(SOCKET_EVENTS.MESSAGE_DELIVERED, async ({ messageId, chatId }) => {
     try {
-      // Update DB
+      if (!messageId || !chatId) return;
+
       await prisma.message.update({
         where: { id: messageId },
         data: {
@@ -136,7 +157,6 @@ const registerChatHandlers = (io, socket) => {
         },
       });
 
-      // Notify sender
       socket.to(`chat:${chatId}`).emit(SOCKET_EVENTS.MESSAGE_DELIVERED, {
         messageId,
         chatId,

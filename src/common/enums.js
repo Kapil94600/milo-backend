@@ -1,5 +1,5 @@
 // ============================================
-// Enums (mirror of Prisma enums for JS use)
+// Enums (mirror of Prisma enums)
 // ============================================
 
 const Role = {
@@ -267,9 +267,6 @@ const GirlRequestStatus = {
   REJECTED: 'REJECTED',
 };
 
-// ============================================
-// OTP_PURPOSE
-// ============================================
 const OTP_PURPOSE = {
   LOGIN: 'LOGIN',
   REGISTER: 'REGISTER',
@@ -277,13 +274,9 @@ const OTP_PURPOSE = {
   VERIFY_PHONE: 'VERIFY_PHONE',
 };
 
-// ============================================
-// Alias — for backward compatibility
-// ============================================
 const ROLES = Role;
 
 module.exports = {
-  // Enums
   Role,
   Status,
   Gender,
@@ -318,7 +311,5 @@ module.exports = {
   AuditStatus,
   GirlRequestStatus,
   OTP_PURPOSE,
-
-  // Alias
   ROLES,
 };

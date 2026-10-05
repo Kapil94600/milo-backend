@@ -38,7 +38,6 @@ class AuditService {
         },
       });
     } catch (e) {
-      // Silent fail — don't break main flow
       return null;
     }
   }
@@ -142,7 +141,7 @@ class AuditService {
   }
 
   // ============================================
-  // 5. CLEANUP OLD LOGS (cron)
+  // 5. CLEANUP OLD LOGS
   // ============================================
   static async cleanup(daysOld = 90) {
     const cutoff = new Date(Date.now() - daysOld * 24 * 60 * 60 * 1000);

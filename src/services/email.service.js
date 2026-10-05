@@ -38,7 +38,7 @@ const initTransporter = () => {
 
 class EmailService {
   // ============================================
-  // 1. SEND (main)
+  // Send (main)
   // ============================================
   static async send({ to, subject, html, text = null }) {
     const t = initTransporter();
@@ -66,7 +66,7 @@ class EmailService {
   }
 
   // ============================================
-  // 2. WELCOME EMAIL
+  // Welcome email
   // ============================================
   static async sendWelcome(user) {
     return this.send({
@@ -85,7 +85,7 @@ class EmailService {
   }
 
   // ============================================
-  // 3. SUBSCRIPTION CONFIRMATION
+  // Subscription confirmation
   // ============================================
   static async sendSubscriptionConfirmation(user, subscription, plan) {
     return this.send({
@@ -108,7 +108,7 @@ class EmailService {
   }
 
   // ============================================
-  // 4. WITHDRAWAL STATUS
+  // Withdrawal update
   // ============================================
   static async sendWithdrawalUpdate(user, withdrawal) {
     const statusEmoji = {
@@ -125,15 +125,23 @@ class EmailService {
           <h1>Withdrawal ${statusEmoji[withdrawal.status] || ''} ${withdrawal.status}</h1>
           <p>Hi ${user.name},</p>
           <p>Your withdrawal of <strong>₹${withdrawal.amount}</strong> has been ${withdrawal.status.toLowerCase()}.</p>
-          ${withdrawal.status === 'REJECTED' && withdrawal.failureReason ? `<p>Reason: ${withdrawal.failureReason}</p>` : ''}
-          ${withdrawal.status === 'COMPLETED' ? `<p>Amount credited: ₹${withdrawal.netAmount}</p>` : ''}
+          ${
+            withdrawal.status === 'REJECTED' && withdrawal.failureReason
+              ? `<p>Reason: ${withdrawal.failureReason}</p>`
+              : ''
+          }
+          ${
+            withdrawal.status === 'COMPLETED'
+              ? `<p>Amount credited: ₹${withdrawal.netAmount}</p>`
+              : ''
+          }
         </div>
       `,
     });
   }
 
   // ============================================
-  // 5. PASSWORD RESET
+  // Password reset
   // ============================================
   static async sendPasswordReset(user, resetToken) {
     const resetUrl = `${config.CORS_ORIGIN[0]}/reset-password?token=${resetToken}`;
@@ -155,7 +163,7 @@ class EmailService {
   }
 
   // ============================================
-  // 6. REPORT RESOLVED
+  // Report resolved
   // ============================================
   static async sendReportResolved(user, report) {
     return this.send({

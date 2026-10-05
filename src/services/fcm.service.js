@@ -1,5 +1,5 @@
 // ============================================
-// FCM Service — Firebase Cloud Messaging (Real Implementation)
+// FCM Service — Firebase Cloud Messaging
 // ============================================
 
 const admin = require('firebase-admin');
@@ -15,12 +15,10 @@ let fcmInitialized = false;
 // ============================================
 const initFCM = () => {
   if (fcmInitialized) return fcmReady;
-
   fcmInitialized = true;
 
   const { PROJECT_ID, PRIVATE_KEY, CLIENT_EMAIL } = config.FIREBASE;
 
-  // Check credentials
   if (!PROJECT_ID || !PRIVATE_KEY || !CLIENT_EMAIL) {
     logWarn('FCM disabled — Firebase credentials missing');
     fcmReady = false;
@@ -28,7 +26,6 @@ const initFCM = () => {
   }
 
   try {
-    // Avoid double initialization
     if (!admin.apps.length) {
       admin.initializeApp({
         credential: admin.credential.cert({
@@ -53,16 +50,13 @@ const initFCM = () => {
 // FCM Service
 // ============================================
 class FCMService {
-  // ============================================
-  // 1. Check if FCM is available
-  // ============================================
   static isAvailable() {
     if (!fcmInitialized) initFCM();
     return fcmReady;
   }
 
   // ============================================
-  // 2. Get active device tokens for user
+  // Get user's device tokens
   // ============================================
   static async getUserTokens(userId) {
     const devices = await prisma.device.findMany({
@@ -73,7 +67,7 @@ class FCMService {
   }
 
   // ============================================
-  // 3. Send to a single device
+  // Send to single device
   // ============================================
   static async sendToToken(token, notification, data = {}, options = {}) {
     if (!this.isAvailable()) {
@@ -116,13 +110,12 @@ class FCMService {
       const response = await admin.messaging().send(message);
       return { success: true, messageId: response };
     } catch (error) {
-      // Handle specific FCM errors
       return this.handleFCMSendError(error, token);
     }
   }
 
   // ============================================
-  // 4. Send to multiple devices (batch)
+  // Send to multiple devices (batch)
   // ============================================
   static async sendToTokens(tokens, notification, data = {}, options = {}) {
     if (!this.isAvailable()) {
@@ -165,7 +158,6 @@ class FCMService {
 
       const response = await admin.messaging().sendEachForMulticast(message);
 
-      // Handle failed tokens (remove from DB)
       if (response.failureCount > 0) {
         await this.handleFailedTokens(tokens, response.responses);
       }
@@ -183,7 +175,7 @@ class FCMService {
   }
 
   // ============================================
-  // 5. Send to user (all devices)
+  // Send to user (all devices)
   // ============================================
   static async sendToUser(userId, notification, data = {}, options = {}) {
     if (!this.isAvailable()) return { success: false, reason: 'FCM_NOT_AVAILABLE' };
@@ -198,7 +190,7 @@ class FCMService {
   }
 
   // ============================================
-  // 6. Send to topic (broadcast)
+  // Send to topic (broadcast)
   // ============================================
   static async sendToTopic(topic, notification, data = {}) {
     if (!this.isAvailable()) {
@@ -225,7 +217,7 @@ class FCMService {
   }
 
   // ============================================
-  // 7. Subscribe tokens to topic
+  // Subscribe tokens to topic
   // ============================================
   static async subscribeToTopic(tokens, topic) {
     if (!this.isAvailable()) return { success: false };
@@ -239,7 +231,7 @@ class FCMService {
   }
 
   // ============================================
-  // 8. Unsubscribe from topic
+  // Unsubscribe from topic
   // ============================================
   static async unsubscribeFromTopic(tokens, topic) {
     if (!this.isAvailable()) return { success: false };
@@ -253,14 +245,14 @@ class FCMService {
   }
 
   // ============================================
-  // 9. Validate token (dry run)
+  // Validate token
   // ============================================
   static async validateToken(token) {
     if (!this.isAvailable()) return false;
     try {
       await admin.messaging().send(
         { token, data: { test: 'true' } },
-        true // dry run
+        true
       );
       return true;
     } catch (error) {
@@ -269,10 +261,9 @@ class FCMService {
   }
 
   // ============================================
-  // HELPERS
+  // Helpers
   // ============================================
   static stringifyData(data) {
-    // FCM data values must be strings
     const result = {};
     for (const [key, value] of Object.entries(data || {})) {
       if (value === null || value === undefined) continue;
@@ -294,12 +285,11 @@ class FCMService {
   }
 
   // ============================================
-  // Error handling — remove invalid tokens
+  // Error handling
   // ============================================
   static async handleFCMSendError(error, token) {
     const code = error.code || error.errorInfo?.code;
 
-    // Token is invalid — remove from DB
     if (
       code === 'messaging/registration-token-not-registered' ||
       code === 'messaging/invalid-registration-token' ||

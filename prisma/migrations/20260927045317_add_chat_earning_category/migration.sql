@@ -1,3 +1,4 @@
+
 -- AlterEnum
 ALTER TYPE "TransactionCategory" ADD VALUE 'CHAT_EARNING';
 

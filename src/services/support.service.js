@@ -25,7 +25,13 @@ class SupportService {
   // 1. CREATE TICKET
   // ============================================
   static async createTicket(userId, data) {
-    const { subject, category, priority = 'MEDIUM', description, attachments = [], ip, userAgent } = data;
+    const {
+      subject,
+      category,
+      priority = 'MEDIUM',
+      description,
+      attachments = [],
+    } = data;
 
     const ticket = await prisma.supportTicket.create({
       data: {
@@ -45,7 +51,7 @@ class SupportService {
   }
 
   // ============================================
-  // 2. GET TICKETS (admin, with filters)
+  // 2. GET TICKETS (admin)
   // ============================================
   static async getTickets({ page = 1, limit = 20, status, category, priority, search } = {}) {
     const where = { deletedAt: null };
@@ -131,7 +137,6 @@ class SupportService {
       throw AppError.forbidden('Not authorized');
     }
 
-    // Filter internal messages for non-admins
     if (!isAdmin) {
       ticket.messages = ticket.messages.filter((m) => !m.isInternal);
     }
@@ -159,7 +164,6 @@ class SupportService {
       throw AppError.badRequest('Ticket is closed. Please create a new one.');
     }
 
-    // Determine senderRole
     let senderRole = 'USER';
     if (isAdmin) senderRole = 'ADMIN';
     else if (user?.role === 'GIRL') senderRole = 'GIRL';
@@ -175,7 +179,6 @@ class SupportService {
       },
     });
 
-    // Update ticket status to IN_PROGRESS if not closed
     if (ticket.status === SupportStatus.OPEN) {
       await prisma.supportTicket.update({
         where: { id: ticketId },
@@ -210,7 +213,7 @@ class SupportService {
   }
 
   // ============================================
-  // 7. ASSIGN TICKET (admin)
+  // 7. ASSIGN TICKET
   // ============================================
   static async assignTicket(ticketId, adminId) {
     return prisma.supportTicket.update({
@@ -225,7 +228,6 @@ class SupportService {
   static async rateTicket(ticketId, userId, rating, feedback = null) {
     const ticket = await prisma.supportTicket.findUnique({ where: { id: ticketId } });
     if (!ticket) throw AppError.notFound('Ticket not found');
-
     if (ticket.userId !== userId) throw AppError.forbidden('Not authorized');
 
     return prisma.supportTicket.update({
@@ -235,7 +237,7 @@ class SupportService {
   }
 
   // ============================================
-  // 9. STATS (admin)
+  // 9. STATS
   // ============================================
   static async getStats() {
     const [total, open, inProgress, resolved, closed, avgRating] = await Promise.all([
@@ -261,7 +263,7 @@ class SupportService {
   }
 
   // ============================================
-  // 10. DELETE TICKET (admin)
+  // 10. DELETE TICKET
   // ============================================
   static async deleteTicket(ticketId) {
     const ticket = await prisma.supportTicket.findUnique({ where: { id: ticketId } });

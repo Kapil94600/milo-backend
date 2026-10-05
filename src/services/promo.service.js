@@ -1,5 +1,5 @@
 // ============================================
-// Promo Service — Complete
+// Promo Service
 // ============================================
 
 const { prisma } = require('../config/database');
@@ -10,26 +10,21 @@ const { logInfo } = require('../utils/logger');
 
 class PromoService {
   // ============================================
-  // HELPER: Resolve optional image (file OR url)
+  // HELPER: Resolve image
   // ============================================
   static async resolveImage(data, folder = 'promos') {
-    // 1. If file uploaded (multipart)
     if (data._uploadedFile) {
       const result = await UploadService.uploadFile(data._uploadedFile, folder);
       return result.url;
     }
-
-    // 2. If URL string provided
     if (data.image && typeof data.image === 'string' && data.image.trim()) {
       return data.image.trim();
     }
-
-    // 3. Optional — return null if nothing
     return null;
   }
 
   // ============================================
-  // 1. CREATE PROMO (admin)
+  // 1. CREATE PROMO
   // ============================================
   static async createPromo(data, adminId) {
     const existing = await prisma.promoCode.findUnique({
@@ -37,14 +32,13 @@ class PromoService {
     });
     if (existing) throw AppError.conflict('Promo code already exists');
 
-    // Resolve optional image
     const imageUrl = await this.resolveImage(data, 'promos');
 
     return prisma.promoCode.create({
       data: {
         code: data.code.toUpperCase(),
         description: data.description,
-        image: imageUrl, // may be null (schema allows null)
+        image: imageUrl,
         type: data.type,
         value: data.value,
         maxDiscount: data.maxDiscount || null,
@@ -81,7 +75,6 @@ class PromoService {
       throw AppError.badRequest('Promo code has reached its limit');
     }
 
-    // User usage check (PromoUsage)
     const userUsage = await prisma.promoUsage.count({
       where: { promoId: promo.id, userId },
     });
@@ -109,7 +102,7 @@ class PromoService {
   }
 
   // ============================================
-  // 3. APPLY PROMO (with usage tracking)
+  // 3. APPLY PROMO
   // ============================================
   static async applyPromo(code, userId, amount = 0, orderId = null) {
     const result = await this.validatePromo(code, userId, amount);
@@ -134,7 +127,7 @@ class PromoService {
   }
 
   // ============================================
-  // 4. GET PROMOS (admin)
+  // 4. GET PROMOS
   // ============================================
   static async getPromos({ page = 1, limit = 20, isActive, type, search } = {}) {
     const where = { deletedAt: null };
@@ -192,29 +185,19 @@ class PromoService {
   }
 
   // ============================================
-  // 6. UPDATE
+  // 6. UPDATE PROMO
   // ============================================
   static async updatePromo(id, data) {
     const existing = await prisma.promoCode.findUnique({ where: { id } });
     if (!existing) throw AppError.notFound('Promo not found');
 
     const allowed = [
-      'description',
-      'type',
-      'value',
-      'maxDiscount',
-      'minOrderAmount',
-      'maxUses',
-      'perUserLimit',
-      'startDate',
-      'endDate',
-      'isActive',
-      'applicableRoles',
-      'applicableProducts',
+      'description', 'type', 'value', 'maxDiscount', 'minOrderAmount',
+      'maxUses', 'perUserLimit', 'startDate', 'endDate', 'isActive',
+      'applicableRoles', 'applicableProducts',
     ];
     const updates = helpers.pick(data, allowed);
 
-    // Handle image (file or URL)
     if (data._uploadedFile || data.image !== undefined) {
       updates.image = await this.resolveImage(data, 'promos');
     }
@@ -226,7 +209,7 @@ class PromoService {
   }
 
   // ============================================
-  // 7. DELETE (soft)
+  // 7. DELETE PROMO
   // ============================================
   static async deletePromo(id) {
     const existing = await prisma.promoCode.findUnique({ where: { id } });

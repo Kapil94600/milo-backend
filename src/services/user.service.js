@@ -1,5 +1,5 @@
 // ============================================
-// User Service
+// User Service — Complete
 // ============================================
 
 const { prisma } = require('../config/database');
@@ -43,6 +43,13 @@ class UserService {
             isVerified: true,
             rating: true,
             totalReviews: true,
+            hourlyRate: true,
+            videoCallRate: true,
+            chatMessageRate: true,
+            rateApproved: true,
+            pendingHourlyRate: true,
+            pendingVideoRate: true,
+            pendingChatRate: true,
           },
         },
         girlRequest: {
@@ -95,6 +102,8 @@ class UserService {
             specialties: true,
             about: true,
             hourlyRate: true,
+            videoCallRate: true,
+            chatMessageRate: true,
           },
         },
       },
@@ -102,7 +111,7 @@ class UserService {
 
     if (!user) throw AppError.notFound('User not found');
 
-    // Check if blocked (both ways)
+    // Check block
     if (viewerId && viewerId !== userId) {
       const blocked = await prisma.blockedUser.findFirst({
         where: {
@@ -113,82 +122,60 @@ class UserService {
           deletedAt: null,
         },
       });
-
-      if (blocked) {
-        throw AppError.forbidden('User not accessible');
-      }
+      if (blocked) throw AppError.forbidden('User not accessible');
     }
 
     return user;
   }
 
   // ============================================
-  // 3. UPDATE PROFILE — WITH FILE UPLOAD SUPPORT
+  // 3. UPDATE PROFILE
   // ============================================
   static async updateProfile(userId, data) {
     const allowed = [
-      'name',
-      'email',
-      'username',
-      'bio',
-      'birthDate',
-      'gender',
-      'address',
-      'city',
-      'country',
-      'latitude',
-      'longitude',
-      'language',
-      'darkMode',
+      'name', 'email', 'username', 'bio', 'birthDate', 'gender',
+      'address', 'city', 'country', 'latitude', 'longitude',
+      'language', 'darkMode',
     ];
 
     const updates = helpers.pick(data, allowed);
 
-    // ─── Handle profile image (file OR url) ───
+    // Handle profile image
     if (data.profileImageFile) {
-      const result = await UploadService.uploadFile(
-        data.profileImageFile,
-        'profiles'
-      );
+      const result = await UploadService.uploadFile(data.profileImageFile, 'profiles');
       updates.profileImage = result.url;
     } else if (data.profileImage && typeof data.profileImage === 'string') {
       updates.profileImage = data.profileImage.trim();
     }
 
-    // ─── Handle cover image (file OR url) ───
+    // Handle cover image
     if (data.coverImageFile) {
-      const result = await UploadService.uploadFile(
-        data.coverImageFile,
-        'covers'
-      );
+      const result = await UploadService.uploadFile(data.coverImageFile, 'covers');
       updates.coverImage = result.url;
     } else if (data.coverImage && typeof data.coverImage === 'string') {
       updates.coverImage = data.coverImage.trim();
     }
 
-    // ─── Validate email ───
+    // Validate email
     if (updates.email) {
       if (!helpers.isValidEmail(updates.email)) {
         throw AppError.badRequest('Invalid email address');
       }
-
       const existing = await prisma.user.findFirst({
         where: { email: updates.email, NOT: { id: userId } },
       });
-
       if (existing) throw AppError.conflict('Email already in use');
     }
 
-    // ─── Validate username ───
+    // Validate username
     if (updates.username) {
       const existing = await prisma.user.findFirst({
         where: { username: updates.username, NOT: { id: userId } },
       });
-
       if (existing) throw AppError.conflict('Username already taken');
     }
 
-    // ─── Parse birthDate ───
+    // Parse birth date
     if (updates.birthDate) {
       updates.birthDate = new Date(updates.birthDate);
     }
@@ -230,7 +217,6 @@ class UserService {
     if (!user) throw AppError.notFound('User not found');
 
     const updates = {};
-
     if (data.language) updates.language = data.language;
     if (data.darkMode !== undefined) updates.darkMode = data.darkMode;
 
@@ -246,29 +232,19 @@ class UserService {
     });
 
     await invalidateCache(userId);
-
     return updated;
   }
 
   // ============================================
-  // 5. DEVICE TOKEN (FCM) — Enhanced
+  // 5. ADD DEVICE TOKEN (FCM)
   // ============================================
-  static async addDeviceToken(
-    userId,
-    token,
-    platform = 'unknown',
-    deviceInfo = {}
-  ) {
+  static async addDeviceToken(userId, token, platform = 'unknown', deviceInfo = {}) {
     if (!token) throw AppError.badRequest('FCM token is required');
+    if (token.length < 20) throw AppError.badRequest('Invalid FCM token format');
 
-    if (token.length < 20) {
-      throw AppError.badRequest('Invalid FCM token format');
-    }
-
-    // Check if token already registered to another user
+    // Check if token belongs to another user
     const existing = await prisma.device.findUnique({ where: { token } });
     if (existing && existing.userId !== userId) {
-      // Token belongs to someone else — reassign (logged out old user)
       await prisma.device.update({
         where: { token },
         data: { userId, isActive: true },
@@ -297,7 +273,7 @@ class UserService {
 
     logInfo(`Device token registered for user ${userId} (${platform})`);
 
-    // Subscribe to broadcast topics
+    // Subscribe to topics
     try {
       const FCMService = require('./fcm.service');
       await FCMService.subscribeToTopic([token], 'all_users');
@@ -308,6 +284,9 @@ class UserService {
     return { message: 'Device registered', device };
   }
 
+  // ============================================
+  // 6. REMOVE DEVICE TOKEN
+  // ============================================
   static async removeDeviceToken(userId, token) {
     if (!token) throw AppError.badRequest('FCM token is required');
 
@@ -316,7 +295,6 @@ class UserService {
       data: { isActive: false },
     });
 
-    // Unsubscribe from topics
     try {
       const FCMService = require('./fcm.service');
       await FCMService.unsubscribeFromTopic([token], 'all_users');
@@ -328,7 +306,7 @@ class UserService {
   }
 
   // ============================================
-  // 6. ONLINE STATUS
+  // 7. UPDATE ONLINE STATUS
   // ============================================
   static async updateOnlineStatus(userId, isOnline) {
     const user = await prisma.user.update({
@@ -344,7 +322,7 @@ class UserService {
       },
     });
 
-    // If user is girl, update girl status too
+    // Update girl status too
     const girl = await prisma.girl.findUnique({ where: { userId } });
     if (girl) {
       await prisma.girl.update({
@@ -357,11 +335,16 @@ class UserService {
   }
 
   // ============================================
-  // 7. NEARBY USERS
+  // 8. NEARBY USERS
   // ============================================
   static async getNearbyUsers(userId, lat, lng, radiusKm = 10) {
-    if (!lat || !lng)
+    if (!lat || !lng) {
       throw AppError.badRequest('Latitude and longitude are required');
+    }
+
+    if (Math.abs(lat) > 85) {
+      throw AppError.badRequest('Latitude too close to pole');
+    }
 
     const latDelta = radiusKm / 111;
     const lngDelta = radiusKm / (111 * Math.cos((lat * Math.PI) / 180));
@@ -409,14 +392,53 @@ class UserService {
     const dLon = toRad(lon2 - lon1);
     const a =
       Math.sin(dLat / 2) ** 2 +
-      Math.cos(toRad(lat1)) *
-        Math.cos(toRad(lat2)) *
-        Math.sin(dLon / 2) ** 2;
+      Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
     return 2 * R * Math.asin(Math.sqrt(a));
   }
 
   // ============================================
-  // 8. GET ALL USERS (Admin)
+  // 9. SEARCH USERS (public)
+  // ============================================
+  static async searchUsers(query, { limit = 20, excludeUserId = null } = {}) {
+    if (!query || query.length < 2) {
+      return [];
+    }
+
+    const where = {
+      isActive: true,
+      deletedAt: null,
+      OR: [
+        { name: { contains: query, mode: 'insensitive' } },
+        { username: { contains: query, mode: 'insensitive' } },
+      ],
+    };
+
+    if (excludeUserId) {
+      where.id = { not: excludeUserId };
+    }
+
+    const users = await prisma.user.findMany({
+      where,
+      select: {
+        id: true,
+        name: true,
+        username: true,
+        profileImage: true,
+        bio: true,
+        city: true,
+        role: true,
+        isOnline: true,
+        isVerified: true,
+        lastSeen: true,
+      },
+      take: limit,
+    });
+
+    return users;
+  }
+
+  // ============================================
+  // 10. GET ALL USERS (Admin)
   // ============================================
   static async getAllUsers({
     page = 1,
@@ -472,7 +494,7 @@ class UserService {
   }
 
   // ============================================
-  // 9. USER STATS
+  // 11. USER STATS
   // ============================================
   static async getUserStats(userId) {
     const [user, wallet, unreadNotifications, unreadGifts] = await Promise.all([
@@ -515,7 +537,7 @@ class UserService {
   }
 
   // ============================================
-  // 10. DELETE ACCOUNT (soft)
+  // 12. DELETE ACCOUNT (soft)
   // ============================================
   static async deleteAccount(userId) {
     const user = await prisma.user.findUnique({ where: { id: userId } });
@@ -557,7 +579,7 @@ class UserService {
   }
 
   // ============================================
-  // SANITIZE
+  // 13. SANITIZE
   // ============================================
   static sanitizeUser(user) {
     if (!user) return null;

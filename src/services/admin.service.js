@@ -1,5 +1,5 @@
 // ============================================
-// Admin Service — Dashboard + Management
+// Admin Service — Complete with Rate Management
 // ============================================
 
 const { prisma } = require('../config/database');
@@ -16,7 +16,6 @@ class AdminService {
     const last7Days = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
     const last30Days = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
 
-    // ✅ FIX: don't mutate `now` with setHours — create a new date
     const todayStart = new Date();
     todayStart.setHours(0, 0, 0, 0);
 
@@ -38,6 +37,7 @@ class AdminService {
       pendingReports,
       pendingTickets,
       pendingWithdrawals,
+      pendingRateChanges,
     ] = await Promise.all([
       prisma.user.count({ where: { role: 'USER', deletedAt: null } }),
       prisma.user.count({ where: { role: 'GIRL', deletedAt: null } }),
@@ -65,6 +65,7 @@ class AdminService {
       prisma.report.count({ where: { status: 'PENDING', deletedAt: null } }),
       prisma.supportTicket.count({ where: { status: 'OPEN', deletedAt: null } }),
       prisma.withdrawal.count({ where: { status: 'PENDING' } }),
+      prisma.girl.count({ where: { rateApproved: false, deletedAt: null } }),
     ]);
 
     return {
@@ -92,12 +93,12 @@ class AdminService {
         reports: pendingReports,
         tickets: pendingTickets,
         withdrawals: pendingWithdrawals,
+        rateChanges: pendingRateChanges,
       },
       timestamp: new Date(),
     };
   }
 
-  // ... rest of AdminService unchanged (getUserGrowth, getRecentActivities, etc.)
   // ============================================
   // 2. USER GROWTH (chart data)
   // ============================================
@@ -113,7 +114,6 @@ class AdminService {
       select: { createdAt: true },
     });
 
-    // Group by date
     const grouped = {};
     for (let i = 0; i <= days; i++) {
       const d = new Date();
@@ -134,54 +134,54 @@ class AdminService {
   // 3. RECENT ACTIVITIES
   // ============================================
   static async getRecentActivities(limit = 20) {
-    const [recentUsers, recentCalls, recentGifts, recentTransactions] = await Promise.all([
-      prisma.user.findMany({
-        where: { deletedAt: null },
-        select: { id: true, name: true, role: true, createdAt: true },
-        orderBy: { createdAt: 'desc' },
-        take: limit,
-      }),
-      prisma.call.findMany({
-        select: {
-          id: true,
-          type: true,
-          status: true,
-          createdAt: true,
-          caller: { select: { id: true, name: true } },
-          receiver: { select: { id: true, name: true } },
-        },
-        orderBy: { createdAt: 'desc' },
-        take: limit,
-      }),
-      prisma.giftTransaction.findMany({
-        select: {
-          id: true,
-          coins: true,
-          createdAt: true,
-          gift: { select: { name: true } },
-          sender: { select: { id: true, name: true } },
-          receiver: { select: { id: true, name: true } },
-        },
-        orderBy: { createdAt: 'desc' },
-        take: limit,
-      }),
-      prisma.transaction.findMany({
-        where: { deletedAt: null },
-        select: {
-          id: true,
-          type: true,
-          category: true,
-          amount: true,
-          coins: true,
-          createdAt: true,
-          user: { select: { id: true, name: true } },
-        },
-        orderBy: { createdAt: 'desc' },
-        take: limit,
-      }),
-    ]);
+    const [recentUsers, recentCalls, recentGifts, recentTransactions] =
+      await Promise.all([
+        prisma.user.findMany({
+          where: { deletedAt: null },
+          select: { id: true, name: true, role: true, createdAt: true },
+          orderBy: { createdAt: 'desc' },
+          take: limit,
+        }),
+        prisma.call.findMany({
+          select: {
+            id: true,
+            type: true,
+            status: true,
+            createdAt: true,
+            caller: { select: { id: true, name: true } },
+            receiver: { select: { id: true, name: true } },
+          },
+          orderBy: { createdAt: 'desc' },
+          take: limit,
+        }),
+        prisma.giftTransaction.findMany({
+          select: {
+            id: true,
+            coins: true,
+            createdAt: true,
+            gift: { select: { name: true } },
+            sender: { select: { id: true, name: true } },
+            receiver: { select: { id: true, name: true } },
+          },
+          orderBy: { createdAt: 'desc' },
+          take: limit,
+        }),
+        prisma.transaction.findMany({
+          where: { deletedAt: null },
+          select: {
+            id: true,
+            type: true,
+            category: true,
+            amount: true,
+            coins: true,
+            createdAt: true,
+            user: { select: { id: true, name: true } },
+          },
+          orderBy: { createdAt: 'desc' },
+          take: limit,
+        }),
+      ]);
 
-    // Merge & sort by date
     const activities = [
       ...recentUsers.map((u) => ({
         type: 'USER_REGISTERED',
@@ -534,7 +534,8 @@ class AdminService {
     const allowed = [
       'isAvailable', 'isOnline', 'acceptChat', 'acceptCalls',
       'isVerified', 'isFeatured', 'categories', 'languages',
-      'specialties', 'about', 'hourlyRate', 'status',
+      'specialties', 'about', 'hourlyRate', 'videoCallRate',
+      'chatMessageRate', 'rateApproved', 'status',
     ];
     const updates = helpers.pick(data, allowed);
 
@@ -575,7 +576,13 @@ class AdminService {
   // 8. WALLET MANAGEMENT
   // ============================================
   static async getWalletStats() {
-    const [totalCoins, totalBalance, totalEarned, totalWithdrawn, pendingWithdrawals] = await Promise.all([
+    const [
+      totalCoins,
+      totalBalance,
+      totalEarned,
+      totalWithdrawn,
+      pendingWithdrawals,
+    ] = await Promise.all([
       prisma.wallet.aggregate({ _sum: { coins: true } }),
       prisma.wallet.aggregate({ _sum: { balance: true } }),
       prisma.wallet.aggregate({ _sum: { totalEarned: true } }),
@@ -651,12 +658,10 @@ class AdminService {
     const where = { deletedAt: null };
     if (category) where.category = category;
 
-    const settings = await prisma.setting.findMany({
+    return prisma.setting.findMany({
       where,
       orderBy: [{ category: 'asc' }, { key: 'asc' }],
     });
-
-    return settings;
   }
 
   static async getSetting(key) {
@@ -673,10 +678,15 @@ class AdminService {
         data: {
           key,
           value,
-          type: typeof value === 'number' ? 'NUMBER'
-              : typeof value === 'boolean' ? 'BOOLEAN'
-              : Array.isArray(value) ? 'ARRAY'
-              : typeof value === 'object' ? 'OBJECT'
+          type:
+            typeof value === 'number'
+              ? 'NUMBER'
+              : typeof value === 'boolean'
+              ? 'BOOLEAN'
+              : Array.isArray(value)
+              ? 'ARRAY'
+              : typeof value === 'object'
+              ? 'OBJECT'
               : 'STRING',
           category: 'GENERAL',
           updatedBy: adminId,
@@ -710,7 +720,289 @@ class AdminService {
   }
 
   // ============================================
-  // 10. ADMIN MANAGEMENT
+  // ⭐ 10. RATE MANAGEMENT (NEW)
+  // ============================================
+
+  // Get pending rate changes
+  static async getPendingRateChanges({ page = 1, limit = 20 } = {}) {
+    const where = {
+      rateApproved: false,
+      deletedAt: null,
+      OR: [
+        { pendingHourlyRate: { not: null } },
+        { pendingVideoRate: { not: null } },
+        { pendingChatRate: { not: null } },
+      ],
+    };
+
+    const skip = (page - 1) * limit;
+
+    const [girls, total] = await Promise.all([
+      prisma.girl.findMany({
+        where,
+        include: {
+          user: {
+            select: {
+              id: true,
+              name: true,
+              phone: true,
+              profileImage: true,
+            },
+          },
+        },
+        orderBy: { updatedAt: 'desc' },
+        skip,
+        take: limit,
+      }),
+      prisma.girl.count({ where }),
+    ]);
+
+    return {
+      data: girls,
+      pagination: helpers.buildPagination(page, limit, total),
+    };
+  }
+
+  // Approve/Reject rate change
+  static async processRateChange(girlId, action, adminId) {
+    if (!['APPROVED', 'REJECTED'].includes(action)) {
+      throw AppError.badRequest('Action must be APPROVED or REJECTED');
+    }
+
+    const girl = await prisma.girl.findUnique({ where: { id: girlId } });
+    if (!girl) throw AppError.notFound('Girl not found');
+
+    if (girl.rateApproved) {
+      throw AppError.badRequest('No pending rate change for this girl');
+    }
+
+    const updates = {
+      rateApproved: true,
+      pendingHourlyRate: null,
+      pendingVideoRate: null,
+      pendingChatRate: null,
+    };
+
+    if (action === 'APPROVED') {
+      if (girl.pendingHourlyRate !== null) {
+        updates.hourlyRate = girl.pendingHourlyRate;
+      }
+      if (girl.pendingVideoRate !== null) {
+        updates.videoCallRate = girl.pendingVideoRate;
+      }
+      if (girl.pendingChatRate !== null) {
+        updates.chatMessageRate = girl.pendingChatRate;
+      }
+    }
+
+    const updated = await prisma.girl.update({
+      where: { id: girlId },
+      data: updates,
+    });
+
+    logInfo(`Rate change ${action} for girl ${girlId} by admin ${adminId}`);
+    return updated;
+  }
+
+  // Update global rates
+  static async updateGlobalRates({
+    messageCost,
+    mediaCost,
+    girlEarningPercent,
+    voiceCallRate,
+    videoCallRate,
+    platformCommission,
+    minCoinsForVideo,
+  }) {
+    const updates = [];
+
+    if (messageCost !== undefined) {
+      if (messageCost < 0) throw AppError.badRequest('Message cost cannot be negative');
+      updates.push(
+        prisma.setting.upsert({
+          where: { key: 'CHAT_MESSAGE_COST' },
+          update: { value: messageCost },
+          create: {
+            key: 'CHAT_MESSAGE_COST',
+            value: messageCost,
+            type: 'NUMBER',
+            category: 'COINS',
+            description: 'Default cost per text message in coins',
+          },
+        })
+      );
+    }
+
+    if (mediaCost !== undefined) {
+      if (mediaCost < 0) throw AppError.badRequest('Media cost cannot be negative');
+      updates.push(
+        prisma.setting.upsert({
+          where: { key: 'CHAT_MEDIA_COST' },
+          update: { value: mediaCost },
+          create: {
+            key: 'CHAT_MEDIA_COST',
+            value: mediaCost,
+            type: 'NUMBER',
+            category: 'COINS',
+            description: 'Default cost per media message',
+          },
+        })
+      );
+    }
+
+    if (girlEarningPercent !== undefined) {
+      if (girlEarningPercent < 0 || girlEarningPercent > 100) {
+        throw AppError.badRequest('Girl earning percent must be 0-100');
+      }
+      updates.push(
+        prisma.setting.upsert({
+          where: { key: 'CHAT_GIRL_EARNING_PERCENT' },
+          update: { value: girlEarningPercent },
+          create: {
+            key: 'CHAT_GIRL_EARNING_PERCENT',
+            value: girlEarningPercent,
+            type: 'NUMBER',
+            category: 'COINS',
+            description: '% of message coins girl receives',
+          },
+        })
+      );
+    }
+
+    if (voiceCallRate !== undefined) {
+      if (voiceCallRate < 0) throw AppError.badRequest('Voice rate cannot be negative');
+      updates.push(
+        prisma.setting.upsert({
+          where: { key: 'COIN_VOICE_COST_PER_MINUTE' },
+          update: { value: voiceCallRate },
+          create: {
+            key: 'COIN_VOICE_COST_PER_MINUTE',
+            value: voiceCallRate,
+            type: 'NUMBER',
+            category: 'COINS',
+            description: 'Default voice call rate per minute (fallback)',
+          },
+        })
+      );
+    }
+
+    if (videoCallRate !== undefined) {
+      if (videoCallRate < 0) throw AppError.badRequest('Video rate cannot be negative');
+      updates.push(
+        prisma.setting.upsert({
+          where: { key: 'COIN_VIDEO_COST_PER_MINUTE' },
+          update: { value: videoCallRate },
+          create: {
+            key: 'COIN_VIDEO_COST_PER_MINUTE',
+            value: videoCallRate,
+            type: 'NUMBER',
+            category: 'COINS',
+            description: 'Default video call rate per minute (fallback)',
+          },
+        })
+      );
+    }
+
+    if (platformCommission !== undefined) {
+      if (platformCommission < 0 || platformCommission > 100) {
+        throw AppError.badRequest('Platform commission must be 0-100');
+      }
+      updates.push(
+        prisma.setting.upsert({
+          where: { key: 'CALL_PLATFORM_COMMISSION' },
+          update: { value: platformCommission },
+          create: {
+            key: 'CALL_PLATFORM_COMMISSION',
+            value: platformCommission,
+            type: 'NUMBER',
+            category: 'CALLS',
+            description: 'Platform commission % from call earnings',
+          },
+        })
+      );
+    }
+
+    if (minCoinsForVideo !== undefined) {
+      if (minCoinsForVideo < 0) throw AppError.badRequest('Min coins cannot be negative');
+      updates.push(
+        prisma.setting.upsert({
+          where: { key: 'CALL_MIN_COINS_FOR_VIDEO' },
+          update: { value: minCoinsForVideo },
+          create: {
+            key: 'CALL_MIN_COINS_FOR_VIDEO',
+            value: minCoinsForVideo,
+            type: 'NUMBER',
+            category: 'CALLS',
+            description: 'Minimum coins required for video calls',
+          },
+        })
+      );
+    }
+
+    await Promise.all(updates);
+
+    // Return updated rates
+    const settings = await prisma.setting.findMany({
+      where: {
+        key: {
+          in: [
+            'CHAT_MESSAGE_COST',
+            'CHAT_MEDIA_COST',
+            'CHAT_GIRL_EARNING_PERCENT',
+            'COIN_VOICE_COST_PER_MINUTE',
+            'COIN_VIDEO_COST_PER_MINUTE',
+            'CALL_PLATFORM_COMMISSION',
+            'CALL_MIN_COINS_FOR_VIDEO',
+          ],
+        },
+      },
+    });
+
+    const result = settings.reduce((acc, s) => {
+      acc[s.key] = s.value;
+      return acc;
+    }, {});
+
+    logInfo('Global rates updated by admin');
+    return result;
+  }
+
+  // Get global rates
+  static async getGlobalRates() {
+    const settings = await prisma.setting.findMany({
+      where: {
+        key: {
+          in: [
+            'CHAT_MESSAGE_COST',
+            'CHAT_MEDIA_COST',
+            'CHAT_GIRL_EARNING_PERCENT',
+            'COIN_VOICE_COST_PER_MINUTE',
+            'COIN_VIDEO_COST_PER_MINUTE',
+            'CALL_PLATFORM_COMMISSION',
+            'CALL_MIN_COINS_FOR_VIDEO',
+          ],
+        },
+      },
+    });
+
+    const result = settings.reduce((acc, s) => {
+      acc[s.key] = s.value;
+      return acc;
+    }, {});
+
+    return {
+      chatMessageCost: result.CHAT_MESSAGE_COST || 1,
+      chatMediaCost: result.CHAT_MEDIA_COST || 5,
+      girlEarningPercent: result.CHAT_GIRL_EARNING_PERCENT || 50,
+      defaultVoiceRate: result.COIN_VOICE_COST_PER_MINUTE || 10,
+      defaultVideoRate: result.COIN_VIDEO_COST_PER_MINUTE || 20,
+      platformCommission: result.CALL_PLATFORM_COMMISSION || 50,
+      minCoinsForVideo: result.CALL_MIN_COINS_FOR_VIDEO || 50,
+    };
+  }
+
+  // ============================================
+  // 11. ADMIN MANAGEMENT
   // ============================================
   static async getAllAdmins() {
     return prisma.admin.findMany({
@@ -798,38 +1090,41 @@ class AdminService {
   }
 
   // ============================================
-  // 11. ANALYTICS
+  // 12. ANALYTICS
   // ============================================
   static async getAnalytics(startDate, endDate) {
-    const start = startDate ? new Date(startDate) : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    const start = startDate
+      ? new Date(startDate)
+      : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
     const end = endDate ? new Date(endDate) : new Date();
 
-    const [newUsers, activeUsers, calls, messages, gifts, revenue] = await Promise.all([
-      prisma.user.count({
-        where: { createdAt: { gte: start, lte: end }, deletedAt: null },
-      }),
-      prisma.user.count({
-        where: { lastLogin: { gte: start, lte: end }, deletedAt: null },
-      }),
-      prisma.call.count({
-        where: { createdAt: { gte: start, lte: end } },
-      }),
-      prisma.message.count({
-        where: { createdAt: { gte: start, lte: end }, deletedAt: null },
-      }),
-      prisma.giftTransaction.count({
-        where: { createdAt: { gte: start, lte: end }, status: 'COMPLETED' },
-      }),
-      prisma.transaction.aggregate({
-        where: {
-          type: 'CREDIT',
-          status: 'COMPLETED',
-          createdAt: { gte: start, lte: end },
-          deletedAt: null,
-        },
-        _sum: { amount: true },
-      }),
-    ]);
+    const [newUsers, activeUsers, calls, messages, gifts, revenue] =
+      await Promise.all([
+        prisma.user.count({
+          where: { createdAt: { gte: start, lte: end }, deletedAt: null },
+        }),
+        prisma.user.count({
+          where: { lastLogin: { gte: start, lte: end }, deletedAt: null },
+        }),
+        prisma.call.count({
+          where: { createdAt: { gte: start, lte: end } },
+        }),
+        prisma.message.count({
+          where: { createdAt: { gte: start, lte: end }, deletedAt: null },
+        }),
+        prisma.giftTransaction.count({
+          where: { createdAt: { gte: start, lte: end }, status: 'COMPLETED' },
+        }),
+        prisma.transaction.aggregate({
+          where: {
+            type: 'CREDIT',
+            status: 'COMPLETED',
+            createdAt: { gte: start, lte: end },
+            deletedAt: null,
+          },
+          _sum: { amount: true },
+        }),
+      ]);
 
     return {
       period: { start, end },

@@ -44,7 +44,7 @@ const validate = (schemas = {}) => {
 };
 
 // ============================================
-// Common Joi schemas / shortcuts
+// Common Joi shortcuts
 // ============================================
 const J = {
   string: Joi.string().trim(),
@@ -54,7 +54,7 @@ const J = {
   otp: Joi.string().pattern(/^\d{6}$/).message('OTP must be 6 digits'),
   uuid: Joi.string().uuid({ version: ['uuidv4', 'uuidv5'] }),
   cuid: Joi.string().min(20).max(30),
-  id: Joi.string().min(10).max(40), // flexible — Prisma cuid
+  id: Joi.string().min(10).max(40),
   positiveInt: Joi.number().integer().positive(),
   nonNegativeInt: Joi.number().integer().min(0),
   positiveNumber: Joi.number().positive(),

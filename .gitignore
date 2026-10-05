@@ -28,3 +28,4 @@ build/
 
 # Prisma (optional — keep migrations, ignore generated)
 # prisma/migrations/    ← Mat ignore karo
+.env

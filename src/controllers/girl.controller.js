@@ -1,5 +1,5 @@
 // ============================================
-// Girl Controller — Complete
+// Girl Controller — Complete with Rate Management
 // ============================================
 
 const asyncHandler = require('../utils/asyncHandler');
@@ -43,11 +43,22 @@ const getMyProfile = asyncHandler(async (req, res) => {
 });
 
 // ============================================
-// SELF — Update My Profile
+// ⭐ SELF — Update My Profile (with rates)
 // ============================================
 const updateMyProfile = asyncHandler(async (req, res) => {
   const girl = await GirlService.updateMyProfile(req.user.id, req.body);
-  return ApiResponse.success(res, girl, 'Profile updated');
+
+  // Check if rates were changed
+  const hasRateChange =
+    req.body.hourlyRate !== undefined ||
+    req.body.videoCallRate !== undefined ||
+    req.body.chatMessageRate !== undefined;
+
+  const message = hasRateChange
+    ? 'Profile updated. Rate changes pending admin approval.'
+    : 'Profile updated';
+
+  return ApiResponse.success(res, girl, message);
 });
 
 // ============================================
@@ -71,13 +82,9 @@ const updateAvailability = asyncHandler(async (req, res) => {
 // ============================================
 // SELF — Upload Verification Docs
 // ============================================
-// ============================================
-// SELF — Upload Verification Docs (with file upload)
-// ============================================
 const uploadVerificationDocuments = asyncHandler(async (req, res) => {
   const data = { ...req.body };
 
-  // Attach uploaded files (if multipart)
   if (req.files) {
     if (req.files.idProofFile?.[0]) data.idProofFile = req.files.idProofFile[0];
     if (req.files.selfieFile?.[0]) data.selfieFile = req.files.selfieFile[0];
@@ -102,6 +109,66 @@ const getEarnings = asyncHandler(async (req, res) => {
       coinsEarned: girl.totalCoinsEarned,
     },
     'Earnings fetched'
+  );
+});
+
+// ============================================
+// ⭐ SELF — Get My Rates
+// ============================================
+const getMyRates = asyncHandler(async (req, res) => {
+  const girl = await GirlService.getMyProfile(req.user.id);
+
+  return ApiResponse.success(
+    res,
+    {
+      currentRates: {
+        hourlyRate: girl.hourlyRate,
+        videoCallRate: girl.videoCallRate,
+        chatMessageRate: girl.chatMessageRate,
+      },
+      pendingRates: {
+        hourlyRate: girl.pendingHourlyRate,
+        videoCallRate: girl.pendingVideoRate,
+        chatMessageRate: girl.pendingChatRate,
+      },
+      rateApproved: girl.rateApproved,
+      hasPendingChanges: !girl.rateApproved,
+    },
+    'Rates fetched'
+  );
+});
+
+// ============================================
+// SELF — Update My Rates
+// ============================================
+const updateMyRates = asyncHandler(async (req, res) => {
+  const { hourlyRate, videoCallRate, chatMessageRate } = req.body;
+
+  if (
+    hourlyRate === undefined &&
+    videoCallRate === undefined &&
+    chatMessageRate === undefined
+  ) {
+    return ApiResponse.badRequest(res, 'Please provide at least one rate');
+  }
+
+  const girl = await GirlService.updateMyProfile(req.user.id, {
+    hourlyRate,
+    videoCallRate,
+    chatMessageRate,
+  });
+
+  return ApiResponse.success(
+    res,
+    {
+      pendingRates: {
+        hourlyRate: girl.pendingHourlyRate,
+        videoCallRate: girl.pendingVideoRate,
+        chatMessageRate: girl.pendingChatRate,
+      },
+      rateApproved: girl.rateApproved,
+    },
+    'Rate change request submitted for admin approval'
   );
 });
 
@@ -156,15 +223,47 @@ const createGirlProfile = asyncHandler(async (req, res) => {
 // ADMIN — Get All Girls
 // ============================================
 const getAllGirls = asyncHandler(async (req, res) => {
-  const { page, limit, search, isVerified, status } = req.query;
+  const { page, limit, search, isVerified, status, rateApproved } = req.query;
   const result = await GirlService.getAllGirls({
     page: parseInt(page) || 1,
     limit: parseInt(limit) || 20,
     search: search || '',
     isVerified: isVerified !== undefined ? isVerified === 'true' : undefined,
     status: status || undefined,
+    rateApproved:
+      rateApproved !== undefined ? rateApproved === 'true' : undefined,
   });
   return ApiResponse.success(res, result, 'Girls fetched');
+});
+
+// ============================================
+// ⭐ ADMIN — Get Pending Rate Changes
+// ============================================
+const getPendingRateChanges = asyncHandler(async (req, res) => {
+  const { page, limit } = req.query;
+  const result = await GirlService.getPendingRateChanges({
+    page: parseInt(page) || 1,
+    limit: parseInt(limit) || 20,
+  });
+  return ApiResponse.success(res, result, 'Pending rate changes fetched');
+});
+
+// ============================================
+// ⭐ ADMIN — Approve/Reject Rate Change
+// ============================================
+const processRateChange = asyncHandler(async (req, res) => {
+  const { action } = req.body;
+
+  if (!['APPROVED', 'REJECTED'].includes(action)) {
+    return ApiResponse.badRequest(res, 'Action must be APPROVED or REJECTED');
+  }
+
+  const girl = await GirlService.approveRateChange(req.params.id, action);
+  return ApiResponse.success(
+    res,
+    girl,
+    `Rate change ${action.toLowerCase()}`
+  );
 });
 
 // ============================================
@@ -200,7 +299,20 @@ const deleteGirl = asyncHandler(async (req, res) => {
 // PUBLIC — Get Available Girls
 // ============================================
 const getAvailableGirls = asyncHandler(async (req, res) => {
-  const { page, limit, category, language, search, minRating } = req.query;
+  const {
+    page,
+    limit,
+    category,
+    language,
+    search,
+    minRating,
+    maxRating,
+    minRate,
+    maxRate,
+    sortBy,
+    onlineOnly,
+  } = req.query;
+
   const result = await GirlService.getAvailableGirls({
     page: parseInt(page) || 1,
     limit: parseInt(limit) || 20,
@@ -208,6 +320,11 @@ const getAvailableGirls = asyncHandler(async (req, res) => {
     language,
     search,
     minRating,
+    maxRating,
+    minRate,
+    maxRate,
+    sortBy,
+    onlineOnly,
   });
   return ApiResponse.success(res, result, 'Available girls fetched');
 });
@@ -251,6 +368,8 @@ module.exports = {
   updateAvailability,
   uploadVerificationDocuments,
   getEarnings,
+  getMyRates,        // ⭐ NEW
+  updateMyRates,     // ⭐ NEW
   deleteMyProfile,
 
   // Admin — Requests
@@ -263,6 +382,8 @@ module.exports = {
   verifyGirl,
   updateGirl,
   deleteGirl,
+  getPendingRateChanges,  // ⭐ NEW
+  processRateChange,      // ⭐ NEW
 
   // Public
   getAvailableGirls,

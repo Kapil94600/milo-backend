@@ -1,5 +1,5 @@
 // ============================================
-// Auth Service — OTP, JWT, Register, Login, Firebase
+// Auth Service — Firebase + OTP + JWT
 // ============================================
 
 const jwt = require('jsonwebtoken');
@@ -9,7 +9,12 @@ const config = require('../config');
 const AppError = require('../utils/AppError');
 const helpers = require('../utils/helpers');
 const { logInfo, logError } = require('../utils/logger');
-const { ROLES, OTP_PURPOSE, AuthAction, AuditStatus } = require('../common/enums');
+const {
+  ROLES,
+  OTP_PURPOSE,
+  AuthAction,
+  AuditStatus,
+} = require('../common/enums');
 const WalletService = require('./wallet.service');
 const SmsService = require('./sms.service');
 const EmailService = require('./email.service');
@@ -17,7 +22,7 @@ const { verifyFirebaseToken, isFirebaseAvailable } = require('../config/firebase
 
 class AuthService {
   // ============================================
-  // 1. REQUEST OTP (LEGACY — MSG91)
+  // 1. REQUEST OTP (legacy MSG91)
   // ============================================
   static async generateOTP(phone, ip = null, userAgent = null) {
     if (!helpers.isValidPhone(phone)) {
@@ -75,7 +80,7 @@ class AuthService {
   }
 
   // ============================================
-  // 2. VERIFY OTP (LEGACY — MSG91)
+  // 2. VERIFY OTP (legacy)
   // ============================================
   static async verifyOTP(phone, otp, ip = null, userAgent = null, deviceInfo = null) {
     if (!helpers.isValidPhone(phone)) {
@@ -97,7 +102,15 @@ class AuthService {
     });
 
     if (!otpRecord) {
-      await this.logAuthAction(null, normalizedPhone, AuthAction.OTP_VERIFY, AuditStatus.FAILED, 'OTP expired or invalid', ip, userAgent);
+      await this.logAuthAction(
+        null,
+        normalizedPhone,
+        AuthAction.OTP_VERIFY,
+        AuditStatus.FAILED,
+        'OTP expired or invalid',
+        ip,
+        userAgent
+      );
       throw AppError.badRequest('OTP expired or invalid');
     }
 
@@ -106,7 +119,15 @@ class AuthService {
 
       if (newAttempts >= config.OTP_MAX_ATTEMPTS) {
         await prisma.otp.delete({ where: { id: otpRecord.id } });
-        await this.logAuthAction(null, normalizedPhone, AuthAction.OTP_VERIFY, AuditStatus.FAILED, 'Too many attempts', ip, userAgent);
+        await this.logAuthAction(
+          null,
+          normalizedPhone,
+          AuthAction.OTP_VERIFY,
+          AuditStatus.FAILED,
+          'Too many attempts',
+          ip,
+          userAgent
+        );
         throw AppError.badRequest('Too many invalid attempts. Request new OTP.');
       }
 
@@ -115,7 +136,15 @@ class AuthService {
         data: { attempts: newAttempts },
       });
 
-      await this.logAuthAction(null, normalizedPhone, AuthAction.OTP_VERIFY, AuditStatus.FAILED, 'Invalid OTP', ip, userAgent);
+      await this.logAuthAction(
+        null,
+        normalizedPhone,
+        AuthAction.OTP_VERIFY,
+        AuditStatus.FAILED,
+        'Invalid OTP',
+        ip,
+        userAgent
+      );
       throw AppError.badRequest('Invalid OTP');
     }
 
@@ -128,7 +157,7 @@ class AuthService {
   }
 
   // ============================================
-  // ✅ 3. FIREBASE LOGIN (NEW)
+  // 3. FIREBASE LOGIN
   // ============================================
   static async firebaseLogin(idToken, ip = null, userAgent = null, deviceInfo = null) {
     if (!idToken) {
@@ -139,37 +168,53 @@ class AuthService {
       throw AppError.badRequest('Firebase not configured on server');
     }
 
-    // ✅ Verify Firebase ID token
     let decoded;
     try {
       decoded = await verifyFirebaseToken(idToken);
     } catch (error) {
-      await this.logAuthAction(null, null, AuthAction.LOGIN, AuditStatus.FAILED, 'Firebase token invalid', ip, userAgent);
+      await this.logAuthAction(
+        null,
+        null,
+        AuthAction.LOGIN,
+        AuditStatus.FAILED,
+        'Firebase token invalid',
+        ip,
+        userAgent
+      );
       throw AppError.unauthorized('Invalid Firebase token');
     }
 
-    // ✅ Extract phone number
     const phoneNumber = decoded.phone_number;
     if (!phoneNumber) {
       throw AppError.badRequest('Firebase token does not contain phone number');
     }
 
-    // ✅ Normalize: "+919876543210" → "9876543210"
     const normalizedPhone = helpers.normalizePhone(phoneNumber);
-
     if (!helpers.isValidPhone(normalizedPhone)) {
       throw AppError.badRequest('Invalid phone number in Firebase token');
     }
 
     logInfo(`Firebase login: ${normalizedPhone} (uid: ${decoded.uid})`);
 
-    return this._loginOrCreateUser(normalizedPhone, deviceInfo, ip, userAgent, decoded.uid);
+    return this._loginOrCreateUser(
+      normalizedPhone,
+      deviceInfo,
+      ip,
+      userAgent,
+      decoded.uid
+    );
   }
 
   // ============================================
-  // ✅ HELPER: Login or Create User (shared by verifyOTP & firebaseLogin)
+  // 4. LOGIN OR CREATE USER (helper)
   // ============================================
-  static async _loginOrCreateUser(normalizedPhone, deviceInfo, ip, userAgent, firebaseUid = null) {
+  static async _loginOrCreateUser(
+    normalizedPhone,
+    deviceInfo,
+    ip,
+    userAgent,
+    firebaseUid = null
+  ) {
     let user = await prisma.user.findUnique({
       where: { phone: normalizedPhone },
       include: { wallet: true },
@@ -182,26 +227,41 @@ class AuthService {
 
       const referralCode = helpers.generateReferralCode('USER');
 
-      user = await prisma.$transaction(async (tx) => {
-        const newUser = await tx.user.create({
-          data: {
-            phone: normalizedPhone,
-            name: `User_${normalizedPhone.slice(-4)}`,
-            role: ROLES.USER,
-            isVerified: true,
-            isActive: true,
-            referralCode,
-            wallet: {
-              create: { balance: 0, coins: 0 },
+      // ⭐ Try to create, handle P2002 race condition
+      try {
+        user = await prisma.$transaction(async (tx) => {
+          const newUser = await tx.user.create({
+            data: {
+              phone: normalizedPhone,
+              name: `User_${normalizedPhone.slice(-4)}`,
+              role: ROLES.USER,
+              isVerified: true,
+              isActive: true,
+              referralCode,
+              wallet: {
+                create: { balance: 0, coins: 0 },
+              },
             },
-          },
-          include: { wallet: true },
+            include: { wallet: true },
+          });
+
+          return newUser;
         });
+      } catch (error) {
+        // Race condition — another request created the user
+        if (error.code === 'P2002') {
+          user = await prisma.user.findUnique({
+            where: { phone: normalizedPhone },
+            include: { wallet: true },
+          });
+          isNewUser = false;
+        } else {
+          throw error;
+        }
+      }
 
-        return newUser;
-      });
-
-      if (config.BUSINESS.SIGNUP_BONUS_COINS > 0) {
+      // Give signup bonus
+      if (isNewUser && config.BUSINESS.SIGNUP_BONUS_COINS > 0) {
         await WalletService.addCoins(
           user.id,
           config.BUSINESS.SIGNUP_BONUS_COINS,
@@ -210,16 +270,39 @@ class AuthService {
         );
       }
 
-      if (user.email) {
-        EmailService.sendWelcome(user).catch((e) => logError('Welcome email failed', e));
+      // Welcome email
+      if (isNewUser && user.email) {
+        EmailService.sendWelcome(user).catch((e) =>
+          logError('Welcome email failed', e)
+        );
       }
 
-      await this.logAuthAction(user.id, normalizedPhone, AuthAction.REGISTER, AuditStatus.SUCCESS, null, ip, userAgent);
-      logInfo(`New user registered via ${firebaseUid ? 'Firebase' : 'OTP'}: ${normalizedPhone}`);
+      if (isNewUser) {
+        await this.logAuthAction(
+          user.id,
+          normalizedPhone,
+          AuthAction.REGISTER,
+          AuditStatus.SUCCESS,
+          null,
+          ip,
+          userAgent
+        );
+        logInfo(
+          `New user registered via ${firebaseUid ? 'Firebase' : 'OTP'}: ${normalizedPhone}`
+        );
+      }
     }
 
     if (!user.isActive || user.status === 'BLOCKED') {
-      await this.logAuthAction(user.id, normalizedPhone, AuthAction.LOGIN, AuditStatus.FAILED, 'Account blocked', ip, userAgent);
+      await this.logAuthAction(
+        user.id,
+        normalizedPhone,
+        AuthAction.LOGIN,
+        AuditStatus.FAILED,
+        'Account blocked',
+        ip,
+        userAgent
+      );
       throw AppError.forbidden('Account is blocked or inactive');
     }
 
@@ -235,6 +318,7 @@ class AuthService {
       },
     });
 
+    // Register device
     if (deviceInfo?.fcmToken) {
       await prisma.device.upsert({
         where: { token: deviceInfo.fcmToken },
@@ -257,7 +341,15 @@ class AuthService {
       });
     }
 
-    await this.logAuthAction(user.id, normalizedPhone, AuthAction.LOGIN, AuditStatus.SUCCESS, null, ip, userAgent);
+    await this.logAuthAction(
+      user.id,
+      normalizedPhone,
+      AuthAction.LOGIN,
+      AuditStatus.SUCCESS,
+      null,
+      ip,
+      userAgent
+    );
 
     const userData = this.sanitizeUser(user);
 
@@ -269,7 +361,7 @@ class AuthService {
   }
 
   // ============================================
-  // 4. GENERATE TOKENS
+  // 5. GENERATE TOKENS
   // ============================================
   static async generateTokens(user) {
     const payload = {
@@ -298,7 +390,7 @@ class AuthService {
   }
 
   // ============================================
-  // 5. REFRESH ACCESS TOKEN
+  // 6. REFRESH ACCESS TOKEN
   // ============================================
   static async refreshAccessToken(refreshToken, ip = null, userAgent = null) {
     if (!refreshToken) {
@@ -309,7 +401,15 @@ class AuthService {
     try {
       decoded = jwt.verify(refreshToken, config.REFRESH_TOKEN_SECRET);
     } catch (error) {
-      await this.logAuthAction(null, null, AuthAction.REFRESH, AuditStatus.FAILED, 'Invalid refresh token', ip, userAgent);
+      await this.logAuthAction(
+        null,
+        null,
+        AuthAction.REFRESH,
+        AuditStatus.FAILED,
+        'Invalid refresh token',
+        ip,
+        userAgent
+      );
       throw AppError.unauthorized('Invalid or expired refresh token');
     }
 
@@ -318,7 +418,15 @@ class AuthService {
     });
 
     if (!user || user.refreshToken !== refreshToken) {
-      await this.logAuthAction(user?.id || null, user?.phone, AuthAction.REFRESH, AuditStatus.FAILED, 'Token mismatch', ip, userAgent);
+      await this.logAuthAction(
+        user?.id || null,
+        user?.phone,
+        AuthAction.REFRESH,
+        AuditStatus.FAILED,
+        'Token mismatch',
+        ip,
+        userAgent
+      );
       throw AppError.unauthorized('Invalid refresh token');
     }
 
@@ -328,13 +436,21 @@ class AuthService {
 
     const tokens = await this.generateTokens(user);
 
-    await this.logAuthAction(user.id, user.phone, AuthAction.REFRESH, AuditStatus.SUCCESS, null, ip, userAgent);
+    await this.logAuthAction(
+      user.id,
+      user.phone,
+      AuthAction.REFRESH,
+      AuditStatus.SUCCESS,
+      null,
+      ip,
+      userAgent
+    );
 
     return tokens;
   }
 
   // ============================================
-  // 6. LOGOUT
+  // 7. LOGOUT
   // ============================================
   static async logout(userId, ip = null, userAgent = null) {
     const user = await prisma.user.findUnique({ where: { id: userId } });
@@ -349,14 +465,22 @@ class AuthService {
         },
       });
 
-      await this.logAuthAction(userId, user.phone, AuthAction.LOGOUT, AuditStatus.SUCCESS, null, ip, userAgent);
+      await this.logAuthAction(
+        userId,
+        user.phone,
+        AuthAction.LOGOUT,
+        AuditStatus.SUCCESS,
+        null,
+        ip,
+        userAgent
+      );
     }
 
     return { message: 'Logged out successfully' };
   }
 
   // ============================================
-  // 7. LOGOUT ALL DEVICES
+  // 8. LOGOUT ALL DEVICES
   // ============================================
   static async logoutAll(userId, ip = null, userAgent = null) {
     const user = await prisma.user.findUnique({ where: { id: userId } });
@@ -376,13 +500,21 @@ class AuthService {
       data: { isActive: false },
     });
 
-    await this.logAuthAction(userId, user.phone, AuthAction.LOGOUT, AuditStatus.SUCCESS, 'Logged out from all devices', ip, userAgent);
+    await this.logAuthAction(
+      userId,
+      user.phone,
+      AuthAction.LOGOUT,
+      AuditStatus.SUCCESS,
+      'Logged out from all devices',
+      ip,
+      userAgent
+    );
 
     return { message: 'Logged out from all devices' };
   }
 
   // ============================================
-  // 8. CREATE ADMIN
+  // 9. CREATE ADMIN
   // ============================================
   static async createAdmin({ phone, email, name, password, secretKey }) {
     if (secretKey !== config.ADMIN_SECRET_KEY) {
@@ -445,9 +577,17 @@ class AuthService {
   }
 
   // ============================================
-  // 9. LOG AUTH ACTION
+  // 10. LOG AUTH ACTION
   // ============================================
-  static async logAuthAction(userId, phone, action, status, error = null, ip = null, userAgent = null) {
+  static async logAuthAction(
+    userId,
+    phone,
+    action,
+    status,
+    error = null,
+    ip = null,
+    userAgent = null
+  ) {
     try {
       await prisma.authLog.create({
         data: {
@@ -466,7 +606,7 @@ class AuthService {
   }
 
   // ============================================
-  // 10. SANITIZE USER
+  // 11. SANITIZE USER
   // ============================================
   static sanitizeUser(user) {
     if (!user) return null;

@@ -1,6 +1,5 @@
 // ============================================
 // Maintenance Mode Check
-// Blocks non-admin requests when maintenance is ON
 // ============================================
 
 const { prisma } = require('../config/database');
@@ -11,13 +10,11 @@ const { logWarn } = require('../utils/logger');
 const { ROLES } = require('../common/constants');
 
 const CACHE_KEY = 'maintenance:status';
-const CACHE_TTL = 60; // 60 sec
+const CACHE_TTL = 60;
 
-// In-memory fallback
 let memCache = null;
 
 const getMaintenanceStatus = async () => {
-  // Try Redis
   if (isRedisAvailable()) {
     const cached = await cache.get(CACHE_KEY);
     if (cached) return cached;
@@ -25,7 +22,6 @@ const getMaintenanceStatus = async () => {
     return memCache.value;
   }
 
-  // Fetch from DB
   let status = { isEnabled: false };
   try {
     const record = await prisma.maintenance.findFirst({
@@ -35,7 +31,6 @@ const getMaintenanceStatus = async () => {
       ? { isEnabled: record.isEnabled, message: record.message }
       : { isEnabled: false };
 
-    // Cache it
     if (isRedisAvailable()) {
       await cache.set(CACHE_KEY, status, CACHE_TTL).catch(() => {});
     } else {
@@ -49,10 +44,8 @@ const getMaintenanceStatus = async () => {
 };
 
 const checkMaintenance = asyncHandler(async (req, res, next) => {
-  // Skip for admin
   if (req.user && req.user.role === ROLES.ADMIN) return next();
 
-  // Skip health, docs, webhooks
   const skipPaths = ['/health', '/api-docs', '/favicon.ico', '/api/payments/webhook'];
   if (skipPaths.some((p) => req.path.startsWith(p))) return next();
 
@@ -71,9 +64,6 @@ const checkMaintenance = asyncHandler(async (req, res, next) => {
   next();
 });
 
-// ============================================
-// Invalidate cache when admin toggles maintenance
-// ============================================
 const invalidateMaintenanceCache = async () => {
   memCache = null;
   if (isRedisAvailable()) {

@@ -1,5 +1,5 @@
 // ============================================
-// Admin Controller
+// Admin Controller — Complete with Rate Management
 // ============================================
 
 const asyncHandler = require('../utils/asyncHandler');
@@ -116,6 +116,42 @@ const deleteGirl = asyncHandler(async (req, res) => {
 });
 
 // ============================================
+// ⭐ RATE MANAGEMENT (NEW)
+// ============================================
+const getPendingRateChanges = asyncHandler(async (req, res) => {
+  const { page, limit } = req.query;
+  const result = await AdminService.getPendingRateChanges({
+    page: parseInt(page) || 1,
+    limit: parseInt(limit) || 20,
+  });
+  return ApiResponse.success(res, result, 'Pending rate changes fetched');
+});
+
+const processRateChange = asyncHandler(async (req, res) => {
+  const { action } = req.body;
+  if (!['APPROVED', 'REJECTED'].includes(action)) {
+    return ApiResponse.badRequest(res, 'Action must be APPROVED or REJECTED');
+  }
+
+  const girl = await AdminService.processRateChange(
+    req.params.id,
+    action,
+    req.user.id
+  );
+  return ApiResponse.success(res, girl, `Rate change ${action.toLowerCase()}`);
+});
+
+const updateGlobalRates = asyncHandler(async (req, res) => {
+  const rates = await AdminService.updateGlobalRates(req.body);
+  return ApiResponse.success(res, rates, 'Global rates updated');
+});
+
+const getGlobalRates = asyncHandler(async (req, res) => {
+  const rates = await AdminService.getGlobalRates();
+  return ApiResponse.success(res, rates, 'Global rates fetched');
+});
+
+// ============================================
 // WALLET
 // ============================================
 const getWalletStats = asyncHandler(async (req, res) => {
@@ -161,7 +197,11 @@ const getSetting = asyncHandler(async (req, res) => {
 
 const updateSetting = asyncHandler(async (req, res) => {
   const { value } = req.body;
-  const setting = await AdminService.updateSetting(req.params.key, value, req.user.id);
+  const setting = await AdminService.updateSetting(
+    req.params.key,
+    value,
+    req.user.id
+  );
   return ApiResponse.success(res, setting, 'Setting updated');
 });
 
@@ -236,6 +276,12 @@ module.exports = {
   verifyGirl,
   updateGirl,
   deleteGirl,
+
+  // ⭐ Rate Management
+  getPendingRateChanges,
+  processRateChange,
+  updateGlobalRates,
+  getGlobalRates,
 
   // Wallet
   getWalletStats,

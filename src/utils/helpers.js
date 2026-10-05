@@ -110,7 +110,7 @@ const calculateWithdrawalFee = (amount) => {
 // ============================================
 const isValidEmail = (email) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 
-const isValidObjectId = (id) => /^[a-z0-9]{20,30}$/i.test(String(id));
+const isValidObjectId = (id) => /^c[a-z0-9]{24}$/i.test(String(id));
 
 // ============================================
 // Object

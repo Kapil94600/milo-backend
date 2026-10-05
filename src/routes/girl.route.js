@@ -1,5 +1,5 @@
 // ============================================
-// Girl Routes — Complete
+// Girl Routes — Complete with Rate Management
 // ============================================
 
 const express = require('express');
@@ -20,7 +20,12 @@ const setVerificationFolder = (req, res, next) => {
 // ============================================
 // PUBLIC routes
 // ============================================
-router.get('/available', GirlController.getAvailableGirls);
+router.get(
+  '/available',
+  validate(GirlValidator.getAvailableGirls),
+  GirlController.getAvailableGirls
+);
+
 router.get('/top', GirlController.getTopGirls);
 
 // ============================================
@@ -59,13 +64,23 @@ router.put(
   GirlController.updateMyProfile
 );
 
+// ⭐ NEW: Get my rates
+router.get('/profile/rates', GirlController.getMyRates);
+
+// ⭐ NEW: Update my rates (pending admin approval)
+router.put(
+  '/profile/rates',
+  validate(GirlValidator.updateMyRates),
+  GirlController.updateMyRates
+);
+
 // Online status
 router.put('/profile/online', GirlController.updateOnlineStatus);
 
 // Availability
 router.put('/profile/availability', GirlController.updateAvailability);
 
-// ─── Verification documents — supports file upload ───
+// Verification documents — supports file upload
 router.post(
   '/profile/verification',
   setVerificationFolder,
@@ -88,7 +103,28 @@ router.delete('/profile/me', GirlController.deleteMyProfile);
 // ============================================
 router.get('/admin/requests', requireAdmin, GirlController.getAllGirlRequests);
 
-router.put('/admin/requests/:id', requireAdmin, GirlController.processGirlRequest);
+router.put(
+  '/admin/requests/:id',
+  requireAdmin,
+  validate(GirlValidator.processGirlRequest),
+  GirlController.processGirlRequest
+);
+
+// ============================================
+// ⭐ ADMIN — Rate Change Requests
+// ============================================
+router.get(
+  '/admin/rate-requests',
+  requireAdmin,
+  GirlController.getPendingRateChanges
+);
+
+router.put(
+  '/admin/rate-requests/:id',
+  requireAdmin,
+  validate(GirlValidator.processRateChange),
+  GirlController.processRateChange
+);
 
 // ============================================
 // ADMIN — Girls Management
@@ -102,14 +138,29 @@ router.post(
   GirlController.createGirlProfile
 );
 
-// Get all girls
-router.get('/', requireAdmin, GirlController.getAllGirls);
+// Get all girls (with filters)
+router.get(
+  '/',
+  requireAdmin,
+  validate(GirlValidator.getAllGirls),
+  GirlController.getAllGirls
+);
 
 // Verify girl
-router.put('/admin/:id/verify', requireAdmin, GirlController.verifyGirl);
+router.put(
+  '/admin/:id/verify',
+  requireAdmin,
+  validate(GirlValidator.verifyGirl),
+  GirlController.verifyGirl
+);
 
 // Update girl
-router.put('/admin/:id', requireAdmin, GirlController.updateGirl);
+router.put(
+  '/admin/:id',
+  requireAdmin,
+  validate(GirlValidator.updateGirl),
+  GirlController.updateGirl
+);
 
 // Delete girl
 router.delete('/admin/:id', requireAdmin, GirlController.deleteGirl);

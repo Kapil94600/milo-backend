@@ -1,3 +1,7 @@
+// ============================================
+// Prisma Seed — Complete with Rate Settings
+// ============================================
+
 const { PrismaClient } = require('@prisma/client');
 const bcrypt = require('bcryptjs');
 
@@ -10,75 +14,55 @@ async function main() {
   // 1. DEFAULT SETTINGS
   // ============================================
   const settings = [
-    // ============================================
-    // Coins — economy
-    // ============================================
-    { key: 'COIN_MESSAGE_COST', value: 1, type: 'NUMBER', category: 'COINS', description: 'Cost per message in coins' },
-    { key: 'COIN_VOICE_COST_PER_MINUTE', value: 10, type: 'NUMBER', category: 'COINS', description: 'Voice call cost per minute' },
-    { key: 'COIN_VIDEO_COST_PER_MINUTE', value: 20, type: 'NUMBER', category: 'COINS', description: 'Video call cost per minute' },
+    // ═══ Coins — Economy ═══
+    { key: 'COIN_MESSAGE_COST', value: 1, type: 'NUMBER', category: 'COINS', description: 'Cost per message in coins (legacy)' },
+    { key: 'COIN_VOICE_COST_PER_MINUTE', value: 10, type: 'NUMBER', category: 'COINS', description: 'Default voice call cost per minute (fallback)' },
+    { key: 'COIN_VIDEO_COST_PER_MINUTE', value: 20, type: 'NUMBER', category: 'COINS', description: 'Default video call cost per minute (fallback)' },
     { key: 'COIN_SIGNUP_BONUS', value: 100, type: 'NUMBER', category: 'COINS', description: 'Signup bonus coins' },
     { key: 'COIN_REFERRAL_BONUS', value: 50, type: 'NUMBER', category: 'COINS', description: 'Referral bonus coins' },
     { key: 'COIN_DAILY_BONUS', value: 10, type: 'NUMBER', category: 'COINS', description: 'Daily login bonus coins' },
     { key: 'COIN_WITHDRAW_LIMIT', value: 100, type: 'NUMBER', category: 'COINS', description: 'Minimum coins for withdrawal' },
     { key: 'COIN_GIFT_RECEIVER_PERCENT', value: 50, type: 'NUMBER', category: 'COINS', description: 'Percentage of gift coins receiver gets' },
 
-    // ============================================
-    // Chat costs (per message)
-    // ============================================
-    { key: 'CHAT_MESSAGE_COST', value: 1, type: 'NUMBER', category: 'COINS', description: 'Coins deducted per text message' },
-    { key: 'CHAT_MEDIA_COST', value: 5, type: 'NUMBER', category: 'COINS', description: 'Coins deducted per media message (image/video/audio/file)' },
-    { key: 'CHAT_GIRL_EARNING_PERCENT', value: 50, type: 'NUMBER', category: 'COINS', description: 'Percentage of chat message coins girl receives (0-100)' },
+    // ═══ Chat costs ═══
+    { key: 'CHAT_MESSAGE_COST', value: 1, type: 'NUMBER', category: 'COINS', description: 'Default coins per text message' },
+    { key: 'CHAT_MEDIA_COST', value: 5, type: 'NUMBER', category: 'COINS', description: 'Default coins per media message' },
+    { key: 'CHAT_GIRL_EARNING_PERCENT', value: 50, type: 'NUMBER', category: 'COINS', description: 'Percentage of chat coins girl receives' },
 
-    // ============================================
-    // Video call gate
-    // ============================================
-    { key: 'CALL_MIN_COINS_FOR_VIDEO', value: 50, type: 'NUMBER', category: 'CALLS', description: 'Minimum coins required to enable video calls' },
+    // ═══ Video call gate ═══
+    { key: 'CALL_MIN_COINS_FOR_VIDEO', value: 50, type: 'NUMBER', category: 'CALLS', description: 'Minimum coins required for video calls' },
 
-    // ============================================
-    // Calls
-    // ============================================
-    { key: 'CALL_MIN_VOICE_HOURS_FOR_VIDEO', value: 1, type: 'NUMBER', category: 'CALLS', description: 'Min voice hours before video unlock (deprecated — see CALL_MIN_COINS_FOR_VIDEO)' },
+    // ═══ Platform commission ═══
+    { key: 'CALL_PLATFORM_COMMISSION', value: 50, type: 'NUMBER', category: 'CALLS', description: 'Platform commission % from call earnings' },
+
+    // ═══ Calls ═══
     { key: 'CALL_MAX_DURATION_MINUTES', value: 60, type: 'NUMBER', category: 'CALLS', description: 'Max call duration' },
 
-    // ============================================
-    // Chat
-    // ============================================
+    // ═══ Chat ═══
     { key: 'CHAT_MAX_MESSAGE_LENGTH', value: 1000, type: 'NUMBER', category: 'CHAT', description: 'Max message length' },
     { key: 'CHAT_MAX_MEDIA_SIZE_MB', value: 10, type: 'NUMBER', category: 'CHAT', description: 'Max media size' },
 
-    // ============================================
-    // Payment
-    // ============================================
+    // ═══ Payment ═══
     { key: 'PAYMENT_MIN_AMOUNT', value: 1, type: 'NUMBER', category: 'PAYMENT', description: 'Min payment amount' },
     { key: 'PAYMENT_MAX_AMOUNT', value: 100000, type: 'NUMBER', category: 'PAYMENT', description: 'Max payment amount' },
     { key: 'WITHDRAWAL_MIN_AMOUNT', value: 100, type: 'NUMBER', category: 'PAYMENT', description: 'Min withdrawal amount' },
     { key: 'WITHDRAWAL_FEE_PERCENT', value: 2, type: 'NUMBER', category: 'PAYMENT', description: 'Withdrawal fee percent' },
 
-    // ============================================
-    // Subscription
-    // ============================================
+    // ═══ Subscription ═══
     { key: 'SUBSCRIPTION_TRIAL_DAYS', value: 7, type: 'NUMBER', category: 'SUBSCRIPTION', description: 'Free trial days' },
 
-    // ============================================
-    // Referral
-    // ============================================
+    // ═══ Referral ═══
     { key: 'REFERRAL_MAX_PER_USER', value: 100, type: 'NUMBER', category: 'REFERRAL', description: 'Max referrals per user' },
 
-    // ============================================
-    // Security
-    // ============================================
+    // ═══ Security ═══
     { key: 'SECURITY_MAX_LOGIN_ATTEMPTS', value: 5, type: 'NUMBER', category: 'SECURITY', description: 'Max login attempts' },
     { key: 'SECURITY_SESSION_TIMEOUT_MINUTES', value: 60, type: 'NUMBER', category: 'SECURITY', description: 'Session timeout' },
 
-    // ============================================
-    // Notification
-    // ============================================
+    // ═══ Notification ═══
     { key: 'NOTIFICATION_PUSH_ENABLED', value: true, type: 'BOOLEAN', category: 'NOTIFICATION', description: 'Enable push notifications' },
     { key: 'NOTIFICATION_EMAIL_ENABLED', value: false, type: 'BOOLEAN', category: 'NOTIFICATION', description: 'Enable email notifications' },
 
-    // ============================================
-    // Maintenance
-    // ============================================
+    // ═══ Maintenance ═══
     { key: 'MAINTENANCE_MODE', value: false, type: 'BOOLEAN', category: 'MAINTENANCE', description: 'Maintenance mode on/off' },
   ];
 
@@ -114,10 +98,7 @@ async function main() {
         isVerified: true,
         referralCode: 'SUPERADMIN',
         wallet: {
-          create: {
-            balance: 0,
-            coins: 0,
-          },
+          create: { balance: 0, coins: 0 },
         },
       },
     });
@@ -285,14 +266,14 @@ async function main() {
   }
 
   // ============================================
-  // 8. SAMPLE BANNERS (optional)
+  // 8. SAMPLE BANNERS
   // ============================================
   const bannerCount = await prisma.banner.count();
   if (bannerCount === 0) {
     await prisma.banner.createMany({
       data: [
         {
-          title: 'Welcome to Vibe!',
+          title: 'Welcome to Bond!',
           subtitle: 'Meet new people',
           image: 'https://via.placeholder.com/800x400/E11D48/FFFFFF?text=Welcome',
           linkType: 'NONE',

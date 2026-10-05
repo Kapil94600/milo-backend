@@ -1,5 +1,5 @@
 // ============================================
-// Application Constants
+// Application Constants — Complete
 // ============================================
 
 module.exports = {
@@ -29,6 +29,23 @@ module.exports = {
   },
 
   // ============================================
+  // HTTP STATUS CODES
+  // ============================================
+  HTTP_STATUS: {
+    OK: 200,
+    CREATED: 201,
+    NO_CONTENT: 204,
+    BAD_REQUEST: 400,
+    UNAUTHORIZED: 401,
+    FORBIDDEN: 403,
+    NOT_FOUND: 404,
+    CONFLICT: 409,
+    UNPROCESSABLE_ENTITY: 422,
+    TOO_MANY_REQUESTS: 429,
+    INTERNAL_SERVER_ERROR: 500,
+  },
+
+  // ============================================
   // CALL
   // ============================================
   CALL_TYPES: {
@@ -37,6 +54,17 @@ module.exports = {
   },
 
   CALL_STATUS: {
+    INITIATED: 'INITIATED',
+    CONNECTED: 'CONNECTED',
+    ENDED: 'ENDED',
+    MISSED: 'MISSED',
+    REJECTED: 'REJECTED',
+    CANCELLED: 'CANCELLED',
+    FAILED: 'FAILED',
+  },
+
+  // Alias
+  CallStatus: {
     INITIATED: 'INITIATED',
     CONNECTED: 'CONNECTED',
     ENDED: 'ENDED',
@@ -194,7 +222,7 @@ module.exports = {
   },
 
   // ============================================
-  // SOCKET EVENTS (unified with mobile)
+  // SOCKET EVENTS
   // ============================================
   SOCKET_EVENTS: {
     // Connection
@@ -219,7 +247,7 @@ module.exports = {
     TYPING_START: 'typing:start',
     TYPING_STOP: 'typing:stop',
 
-    // Call — unified with mobile
+    // Call
     CALL_INITIATE: 'call:initiate',
     CALL_INCOMING: 'call:incoming',
     CALL_ACCEPT: 'call:accept',
@@ -255,22 +283,13 @@ module.exports = {
 
     // Notification
     NOTIFICATION: 'notification',
-  },
 
-  // ============================================
-  // HTTP STATUS CODES
-  // ============================================
-  HTTP_STATUS: {
-    OK: 200,
-    CREATED: 201,
-    NO_CONTENT: 204,
-    BAD_REQUEST: 400,
-    UNAUTHORIZED: 401,
-    FORBIDDEN: 403,
-    NOT_FOUND: 404,
-    CONFLICT: 409,
-    UNPROCESSABLE_ENTITY: 422,
-    TOO_MANY_REQUESTS: 429,
-    INTERNAL_SERVER_ERROR: 500,
+    // ⭐ Rate Events
+    RATE_SUBMIT: 'rate:submit',
+    RATE_SUBMITTED: 'rate:submitted',
+    RATE_APPROVED: 'rate:approved',
+    RATE_REJECTED: 'rate:rejected',
+    RATE_PENDING_NEW: 'rate:pending-new',
+    RATE_ERROR: 'rate:error',
   },
 };

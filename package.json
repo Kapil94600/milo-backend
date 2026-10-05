@@ -1,8 +1,11 @@
 {
   "name": "social-platform-backend",
   "version": "1.0.0",
-  "description": "Social Communication Platform - Backend API (Node.js + Express + Prisma + PostgreSQL)",
+  "description": "Social Communication Platform - Backend API",
   "main": "src/server.js",
+  "prisma": {
+    "seed": "node prisma/seed.js"
+  },
   "scripts": {
     "start": "node src/server.js",
     "dev": "nodemon src/server.js",
@@ -46,7 +49,7 @@
     "morgan": "^1.10.0",
     "multer": "^1.4.5-lts.1",
     "node-cron": "^3.0.3",
-    "nodemailer": "^10.0.10",
+    "nodemailer": "^6.9.16",
     "razorpay": "^2.9.8",
     "redis": "^4.7.0",
     "socket.io": "^4.8.1",

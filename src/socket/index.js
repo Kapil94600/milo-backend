@@ -1,5 +1,5 @@
 // ============================================
-// Socket.IO Setup
+// Socket.IO Setup — Complete
 // ============================================
 
 const { Server } = require('socket.io');
@@ -14,7 +14,7 @@ const { registerCallHandlers } = require('./call.socket');
 const NotificationService = require('../services/notification.service');
 
 let io = null;
-const connectedUsers = new Map(); // userId -> socketId
+const connectedUsers = new Map(); // userId -> Set<socketId>
 
 // ============================================
 // Initialize Socket.IO
@@ -30,7 +30,6 @@ const initSocket = async (server) => {
     transports: ['websocket', 'polling'],
   });
 
-  // Wire NotificationService with io instance
   NotificationService.setSocketIO(io);
 
   // Optional: Redis adapter for multi-instance
@@ -41,7 +40,7 @@ const initSocket = async (server) => {
       io.adapter(createAdapter(pubClient, subClient));
       logInfo('✅ Socket.IO Redis adapter enabled');
     } else {
-      logInfo('⚠️  Redis not available — Socket.IO running in single-instance mode');
+      logInfo('⚠️  Redis not available — Socket.IO single-instance mode');
     }
   } catch (e) {
     logInfo('⚠️  Redis adapter disabled');
@@ -52,9 +51,7 @@ const initSocket = async (server) => {
   // ============================================
   io.use(async (socket, next) => {
     try {
-      const token =
-        socket.handshake.auth?.token || socket.handshake.query?.token;
-
+      const token = socket.handshake.auth?.token || socket.handshake.query?.token;
       if (!token) throw new Error('Authentication required');
 
       const decoded = jwt.verify(token, config.JWT_SECRET);
@@ -75,7 +72,6 @@ const initSocket = async (server) => {
       if (!user || !user.isActive || user.deletedAt) {
         throw new Error('User not found or inactive');
       }
-
       if (user.status === 'BLOCKED') {
         throw new Error('Account blocked');
       }
@@ -99,11 +95,14 @@ const initSocket = async (server) => {
 
     logInfo(`🔌 Socket connected: ${userId} (${user.name})`);
 
-    // Track connected user
-    connectedUsers.set(userId, socket.id);
+    // Track connected user (multi-device)
+    if (!connectedUsers.has(userId)) {
+      connectedUsers.set(userId, new Set());
+    }
+    connectedUsers.get(userId).add(socket.id);
     setConnectedUsers(connectedUsers);
 
-    // Join personal room
+    // Join personal rooms
     socket.join(`user:${userId}`);
     socket.join(`role:${user.role}`);
 
@@ -122,7 +121,6 @@ const initSocket = async (server) => {
         data: { isOnline: true, lastSeen: new Date() },
       });
 
-      // If girl, update girl status
       const girl = await prisma.girl.findUnique({ where: { userId } });
       if (girl) {
         await prisma.girl.update({
@@ -141,47 +139,50 @@ const initSocket = async (server) => {
       role: user.role,
     });
 
-    // ============================================
     // Register handlers
-    // ============================================
     const socketHelpers = {
       getUserSocketId,
       isUserOnline,
       getConnectedUsers,
     };
 
-    registerChatHandlers(io, socket);
+    registerChatHandlers(io, socket, socketHelpers);
     registerCallHandlers(io, socket, socketHelpers);
+    registerRateHandlers(io, socket); // ⭐ Rate handlers
 
-    // ============================================
     // Disconnect
-    // ============================================
     socket.on('disconnect', async () => {
       logInfo(`🔌 Socket disconnected: ${userId}`);
 
-      connectedUsers.delete(userId);
-
-      try {
-        await prisma.user.update({
-          where: { id: userId },
-          data: { isOnline: false, lastSeen: new Date() },
-        });
-
-        const girl = await prisma.girl.findUnique({ where: { userId } });
-        if (girl) {
-          await prisma.girl.update({
-            where: { userId },
-            data: { isOnline: false },
-          });
+      const userSockets = connectedUsers.get(userId);
+      if (userSockets) {
+        userSockets.delete(socket.id);
+        if (userSockets.size === 0) {
+          connectedUsers.delete(userId);
         }
-      } catch (e) {
-        logError('Failed to update offline status', e);
       }
 
-      // Broadcast offline
-      socket.broadcast.emit(SOCKET_EVENTS.USER_OFFLINE, {
-        userId,
-      });
+      // Only mark offline if no more sockets
+      if (!connectedUsers.has(userId)) {
+        try {
+          await prisma.user.update({
+            where: { id: userId },
+            data: { isOnline: false, lastSeen: new Date() },
+          });
+
+          const girl = await prisma.girl.findUnique({ where: { userId } });
+          if (girl) {
+            await prisma.girl.update({
+              where: { userId },
+              data: { isOnline: false },
+            });
+          }
+        } catch (e) {
+          logError('Failed to update offline status', e);
+        }
+
+        socket.broadcast.emit(SOCKET_EVENTS.USER_OFFLINE, { userId });
+      }
     });
   });
 
@@ -190,12 +191,90 @@ const initSocket = async (server) => {
 };
 
 // ============================================
+// ⭐ Rate-Specific Handlers
+// ============================================
+const registerRateHandlers = (io, socket) => {
+  const userId = socket.data.userId;
+  const user = socket.data.user;
+
+  // Girl: Submit rate change request
+  socket.on('rate:submit', async (data) => {
+    try {
+      io.to('role:ADMIN').emit('rate:pending-new', {
+        girlId: userId,
+        girlName: user.name,
+        rates: data,
+        timestamp: new Date(),
+      });
+
+      socket.emit('rate:submitted', { success: true, ...data });
+    } catch (error) {
+      logError('Rate submit failed', error);
+      socket.emit('rate:error', { message: error.message });
+    }
+  });
+
+  // Admin: Approve rate change
+  socket.on('rate:approve', async (data) => {
+    if (user.role !== 'ADMIN') return;
+
+    try {
+      io.to(`user:${data.girlUserId}`).emit('rate:approved', {
+        rates: data.rates,
+        approvedBy: user.name,
+        timestamp: new Date(),
+      });
+    } catch (error) {
+      logError('Rate approve failed', error);
+    }
+  });
+
+  // Admin: Reject rate change
+  socket.on('rate:reject', async (data) => {
+    if (user.role !== 'ADMIN') return;
+
+    try {
+      io.to(`user:${data.girlUserId}`).emit('rate:rejected', {
+        reason: data.reason,
+        rejectedBy: user.name,
+        timestamp: new Date(),
+      });
+    } catch (error) {
+      logError('Rate reject failed', error);
+    }
+  });
+};
+
+// ============================================
 // Helpers
 // ============================================
 const getIO = () => io;
+
 const getConnectedUsers = () => Array.from(connectedUsers.keys());
-const getUserSocketId = (userId) => connectedUsers.get(userId);
+
+const getUserSocketId = (userId) => {
+  const sockets = connectedUsers.get(userId);
+  return sockets ? Array.from(sockets)[0] : null;
+};
+
 const isUserOnline = (userId) => connectedUsers.has(userId);
+
+// ============================================
+// Public: Notify Rate Change (from services)
+// ============================================
+const notifyRateChange = (girlUserId, action, data) => {
+  if (!io) return;
+  io.to(`user:${girlUserId}`).emit(`rate:${action.toLowerCase()}`, data);
+};
+
+const notifyAdminRatePending = (girlUserId, data) => {
+  if (!io) return;
+  io.to('role:ADMIN').emit('rate:pending-new', {
+    girlId: girlUserId,
+    ...data,
+    timestamp: new Date(),
+  });
+};
 
 module.exports = {
   initSocket,
@@ -203,4 +282,6 @@ module.exports = {
   getConnectedUsers,
   getUserSocketId,
   isUserOnline,
+  notifyRateChange,
+  notifyAdminRatePending,
 };

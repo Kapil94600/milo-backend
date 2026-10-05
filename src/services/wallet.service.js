@@ -1,5 +1,5 @@
 // ============================================
-// Wallet Service — Complete (with CoinPackage image + proper type conversion)
+// Wallet Service — Complete with Safe Transactions
 // ============================================
 
 const { prisma } = require('../config/database');
@@ -12,7 +12,7 @@ const { logInfo, logError } = require('../utils/logger');
 
 class WalletService {
   // ============================================
-  // HELPER: Parse number safely
+  // Helper: Parse number safely
   // ============================================
   static parseNumber(value, fallback = 0) {
     if (value === null || value === undefined || value === '') return fallback;
@@ -21,7 +21,7 @@ class WalletService {
   }
 
   // ============================================
-  // HELPER: Parse boolean safely
+  // Helper: Parse boolean safely
   // ============================================
   static parseBoolean(value, fallback = false) {
     if (value === null || value === undefined || value === '') return fallback;
@@ -36,18 +36,16 @@ class WalletService {
   // ============================================
   static async getWallet(userId) {
     let wallet = await prisma.wallet.findUnique({ where: { userId } });
-
     if (!wallet) {
       wallet = await prisma.wallet.create({
         data: { userId, balance: 0, coins: 0 },
       });
     }
-
     return wallet;
   }
 
   // ============================================
-  // 2. GET TRANSACTIONS (paginated)
+  // 2. GET TRANSACTIONS
   // ============================================
   static async getTransactions(
     userId,
@@ -110,15 +108,9 @@ class WalletService {
   }
 
   // ============================================
-  // 4. ADD COINS
+  // 4. ADD COINS (atomic)
   // ============================================
-  static async addCoins(
-    userId,
-    coins,
-    category,
-    description,
-    metadata = null
-  ) {
+  static async addCoins(userId, coins, category, description, metadata = null) {
     if (coins <= 0) throw AppError.badRequest('Coins must be positive');
 
     const result = await prisma.$transaction(async (tx) => {
@@ -164,15 +156,17 @@ class WalletService {
 
     logInfo(`+${coins} coins to ${userId} (${category})`);
 
-   const notifyCategories = [
-  'SIGNUP_BONUS',
-  'REFERRAL_BONUS',
-  'DAILY_BONUS',
-  'ADMIN_ADD',
-  'REWARD',
-  'CALL_EARNING',
-  'CHAT_EARNING',
-];
+    // Notification for specific categories
+    const notifyCategories = [
+      'SIGNUP_BONUS',
+      'REFERRAL_BONUS',
+      'DAILY_BONUS',
+      'ADMIN_ADD',
+      'REWARD',
+      'CALL_EARNING',
+      'CHAT_EARNING',
+    ];
+
     if (notifyCategories.includes(category)) {
       NotificationService.sendCoinNotification(
         userId,
@@ -186,32 +180,29 @@ class WalletService {
   }
 
   // ============================================
-  // 5. DEDUCT COINS
+  // 5. DEDUCT COINS (atomic — critical fix)
   // ============================================
-  static async deductCoins(
-    userId,
-    coins,
-    category,
-    description,
-    metadata = null
-  ) {
+  static async deductCoins(userId, coins, category, description, metadata = null) {
     if (coins <= 0) throw AppError.badRequest('Coins must be positive');
 
     const result = await prisma.$transaction(async (tx) => {
-      const wallet = await tx.wallet.findUnique({ where: { userId } });
-      if (!wallet) throw AppError.notFound('Wallet not found');
-
-      if (wallet.coins < coins) {
-        throw AppError.badRequest('Insufficient coins');
-      }
-
-      const updated = await tx.wallet.update({
-        where: { userId },
+      // ⭐ ATOMIC check + deduct (prevents negative balance)
+      const updated = await tx.wallet.updateMany({
+        where: {
+          userId,
+          coins: { gte: coins },
+        },
         data: {
           coins: { decrement: coins },
           totalSpent: { increment: coins },
         },
       });
+
+      if (updated.count === 0) {
+        throw AppError.badRequest('Insufficient coins');
+      }
+
+      const wallet = await tx.wallet.findUnique({ where: { userId } });
 
       await tx.user.update({
         where: { id: userId },
@@ -227,15 +218,15 @@ class WalletService {
           coins,
           description,
           status: 'COMPLETED',
-          balanceAfter: updated.balance,
-          coinsAfter: updated.coins,
+          balanceAfter: wallet.balance,
+          coinsAfter: wallet.coins,
           referenceId: metadata?.referenceId || null,
           referenceModel: metadata?.referenceModel || null,
           gatewayResponse: metadata || null,
         },
       });
 
-      return updated;
+      return wallet;
     });
 
     logInfo(`-${coins} coins from ${userId} (${category})`);
@@ -268,13 +259,7 @@ class WalletService {
   // ============================================
   // 7. ADD MONEY
   // ============================================
-  static async addMoney(
-    userId,
-    amount,
-    category,
-    description,
-    metadata = null
-  ) {
+  static async addMoney(userId, amount, category, description, metadata = null) {
     if (amount <= 0) throw AppError.badRequest('Amount must be positive');
 
     const result = await prisma.$transaction(async (tx) => {
@@ -319,30 +304,26 @@ class WalletService {
   // ============================================
   // 8. DEDUCT MONEY
   // ============================================
-  static async deductMoney(
-    userId,
-    amount,
-    category,
-    description,
-    metadata = null
-  ) {
+  static async deductMoney(userId, amount, category, description, metadata = null) {
     if (amount <= 0) throw AppError.badRequest('Amount must be positive');
 
     const result = await prisma.$transaction(async (tx) => {
-      const wallet = await tx.wallet.findUnique({ where: { userId } });
-      if (!wallet) throw AppError.notFound('Wallet not found');
-
-      if (wallet.balance < amount) {
-        throw AppError.badRequest('Insufficient balance');
-      }
-
-      const updated = await tx.wallet.update({
-        where: { userId },
+      const updated = await tx.wallet.updateMany({
+        where: {
+          userId,
+          balance: { gte: amount },
+        },
         data: {
           balance: { decrement: amount },
           totalSpent: { increment: amount },
         },
       });
+
+      if (updated.count === 0) {
+        throw AppError.badRequest('Insufficient balance');
+      }
+
+      const wallet = await tx.wallet.findUnique({ where: { userId } });
 
       await tx.transaction.create({
         data: {
@@ -353,29 +334,26 @@ class WalletService {
           coins: 0,
           description,
           status: 'COMPLETED',
-          balanceAfter: updated.balance,
-          coinsAfter: updated.coins,
+          balanceAfter: wallet.balance,
+          coinsAfter: wallet.coins,
           referenceId: metadata?.referenceId || null,
           referenceModel: metadata?.referenceModel || null,
           gatewayResponse: metadata || null,
         },
       });
 
-      return updated;
+      return wallet;
     });
 
     return result;
   }
 
   // ============================================
-  // 9. COIN PACKAGES — Image resolve helper
+  // 9. Coin Packages — Image resolve helper
   // ============================================
   static async resolvePackageImage(data) {
     if (data._uploadedFile) {
-      const result = await UploadService.uploadFile(
-        data._uploadedFile,
-        'coin-packages'
-      );
+      const result = await UploadService.uploadFile(data._uploadedFile, 'coin-packages');
       return result.url;
     }
     if (data.image && typeof data.image === 'string' && data.image.trim()) {
@@ -404,11 +382,9 @@ class WalletService {
   }
 
   // ============================================
-  // 11. CREATE COIN PACKAGE — With explicit type conversion
+  // 11. CREATE COIN PACKAGE
   // ============================================
   static async createCoinPackage(data) {
-    console.log('🔨 [CoinPackage Create] Raw data:', data);
-
     const imageUrl = await this.resolvePackageImage(data);
 
     const payload = {
@@ -425,28 +401,21 @@ class WalletService {
       order: this.parseNumber(data.order, 0),
     };
 
-    console.log('✅ [CoinPackage Create] Parsed payload:', payload);
-
     return prisma.coinPackage.create({ data: payload });
   }
 
   // ============================================
-  // 12. UPDATE COIN PACKAGE — With explicit type conversion
+  // 12. UPDATE COIN PACKAGE
   // ============================================
   static async updateCoinPackage(id, data) {
     const existing = await prisma.coinPackage.findUnique({ where: { id } });
     if (!existing) throw AppError.notFound('Package not found');
 
-    console.log('🔨 [CoinPackage Update] Raw data:', data);
-    console.log('📦 [CoinPackage Update] Existing:', existing);
-
     const updates = {};
 
     if (data.name !== undefined) updates.name = String(data.name).trim();
     if (data.description !== undefined) {
-      updates.description = data.description
-        ? String(data.description).trim()
-        : null;
+      updates.description = data.description ? String(data.description).trim() : null;
     }
     if (data.coins !== undefined) {
       updates.coins = this.parseNumber(data.coins, existing.coins);
@@ -473,12 +442,9 @@ class WalletService {
       updates.order = this.parseNumber(data.order, existing.order);
     }
 
-    // Handle image (file OR url)
     if (data._uploadedFile || data.image !== undefined) {
       updates.image = await this.resolvePackageImage(data);
     }
-
-    console.log('✅ [CoinPackage Update] Parsed updates:', updates);
 
     return prisma.coinPackage.update({ where: { id }, data: updates });
   }
@@ -501,7 +467,6 @@ class WalletService {
   // ============================================
   static async purchaseCoins(userId, packageId, paymentInfo = {}) {
     const pkg = await this.getCoinPackageById(packageId);
-
     if (!pkg.isActive) throw AppError.badRequest('Package is not active');
 
     const totalCoins = pkg.coins + (pkg.bonusCoins || 0);
@@ -560,7 +525,7 @@ class WalletService {
   }
 
   // ============================================
-  // 15. ADMIN: Add coins
+  // 15. ADMIN — Add Coins
   // ============================================
   static async adminAddCoins(userId, coins, reason = 'Admin added') {
     if (!userId || !coins || coins <= 0) {
@@ -579,9 +544,7 @@ class WalletService {
     try {
       const [minSetting, feeSetting] = await Promise.all([
         prisma.setting.findUnique({ where: { key: 'COIN_WITHDRAW_LIMIT' } }),
-        prisma.setting.findUnique({
-          where: { key: 'WITHDRAWAL_FEE_PERCENT' },
-        }),
+        prisma.setting.findUnique({ where: { key: 'WITHDRAWAL_FEE_PERCENT' } }),
       ]);
 
       return {
@@ -625,13 +588,18 @@ class WalletService {
     const netAmount = amount - fee;
 
     const result = await prisma.$transaction(async (tx) => {
-      await tx.wallet.update({
-        where: { userId },
+      // Atomic check + deduct
+      const updated = await tx.wallet.updateMany({
+        where: { userId, balance: { gte: amount } },
         data: {
           balance: { decrement: amount },
           pendingBalance: { increment: amount },
         },
       });
+
+      if (updated.count === 0) {
+        throw AppError.badRequest('Insufficient balance');
+      }
 
       const withdrawal = await tx.withdrawal.create({
         data: {
@@ -693,7 +661,7 @@ class WalletService {
   }
 
   // ============================================
-  // 19. ADMIN: Get all withdrawals
+  // 19. ADMIN — Get All Withdrawals
   // ============================================
   static async getAllWithdrawals({ page = 1, limit = 20, status } = {}) {
     const where = {};
@@ -721,7 +689,7 @@ class WalletService {
   }
 
   // ============================================
-  // 20. ADMIN: Process withdrawal
+  // 20. ADMIN — Process Withdrawal
   // ============================================
   static async processWithdrawal(
     withdrawalId,
@@ -739,10 +707,7 @@ class WalletService {
     });
     if (!withdrawal) throw AppError.notFound('Withdrawal not found');
 
-    if (
-      withdrawal.status === 'COMPLETED' ||
-      withdrawal.status === 'REJECTED'
-    ) {
+    if (withdrawal.status === 'COMPLETED' || withdrawal.status === 'REJECTED') {
       throw AppError.badRequest('Withdrawal already processed');
     }
 
@@ -788,6 +753,7 @@ class WalletService {
       return updated;
     });
 
+    // Send notification
     try {
       await NotificationService.sendWithdrawalNotification(
         withdrawal.userId,
@@ -797,9 +763,7 @@ class WalletService {
       );
 
       if (withdrawal.user?.email) {
-        EmailService.sendWithdrawalUpdate(withdrawal.user, result).catch(
-          () => {}
-        );
+        EmailService.sendWithdrawalUpdate(withdrawal.user, result).catch(() => {});
       }
     } catch (e) {
       logError('Withdrawal notify failed', e);
@@ -810,7 +774,7 @@ class WalletService {
   }
 
   // ============================================
-  // 21. ADMIN: Withdrawal stats
+  // 21. ADMIN — Withdrawal Stats
   // ============================================
   static async getWithdrawalStats() {
     const [pending, approved, rejected, completed, totalAmount] =

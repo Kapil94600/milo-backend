@@ -6,24 +6,31 @@ const { prisma } = require('../config/database');
 const AppError = require('../utils/AppError');
 const helpers = require('../utils/helpers');
 const { logInfo } = require('../utils/logger');
-const { ReportStatus, ReportPriority, ReportAction } = require('../common/enums');
+const { ReportStatus } = require('../common/enums');
 
 class ReportService {
   // ============================================
   // 1. CREATE REPORT
   // ============================================
   static async createReport(reporterId, data) {
-    const { reportedId, type, category, description, evidence = [], priority = 'MEDIUM', ip, userAgent } = data;
+    const {
+      reportedId,
+      type,
+      category,
+      description,
+      evidence = [],
+      priority = 'MEDIUM',
+      ip,
+      userAgent,
+    } = data;
 
     if (reporterId === reportedId) {
       throw AppError.badRequest('Cannot report yourself');
     }
 
-    // Verify reported user exists
     const reported = await prisma.user.findUnique({ where: { id: reportedId } });
     if (!reported) throw AppError.notFound('Reported user not found');
 
-    // Check for existing pending report
     const existing = await prisma.report.findFirst({
       where: {
         reporterId,
@@ -55,12 +62,12 @@ class ReportService {
       },
     });
 
-    logInfo(`Report created: ${report.id} by ${reporterId} against ${reportedId}`);
+    logInfo(`Report created: ${report.id}`);
     return report;
   }
 
   // ============================================
-  // 2. GET REPORTS (admin, with filters)
+  // 2. GET REPORTS (admin)
   // ============================================
   static async getReports({ page = 1, limit = 20, status, type, category, priority } = {}) {
     const where = { deletedAt: null };
@@ -102,23 +109,19 @@ class ReportService {
         reported: { select: { id: true, name: true, phone: true } },
       },
     });
-
     if (!report) throw AppError.notFound('Report not found');
 
-    // Authorization: reporter, reported, or admin
     const user = await prisma.user.findUnique({ where: { id: userId } });
     const isAdmin = user?.role === 'ADMIN';
     const isInvolved = report.reporterId === userId || report.reportedId === userId;
 
-    if (!isAdmin && !isInvolved) {
-      throw AppError.forbidden('Not authorized');
-    }
+    if (!isAdmin && !isInvolved) throw AppError.forbidden('Not authorized');
 
     return report;
   }
 
   // ============================================
-  // 4. UPDATE REPORT STATUS (admin)
+  // 4. UPDATE REPORT STATUS
   // ============================================
   static async updateReportStatus(reportId, adminId, data) {
     const report = await prisma.report.findUnique({ where: { id: reportId } });
@@ -145,10 +148,9 @@ class ReportService {
       },
     });
 
-    // Take action on reported user if resolution action requires
+    // Take action if resolved
     if (data.status === 'RESOLVED' && data.resolutionAction) {
       const action = data.resolutionAction;
-
       if (action === 'BAN') {
         await prisma.user.update({
           where: { id: report.reportedId },
@@ -166,7 +168,7 @@ class ReportService {
   }
 
   // ============================================
-  // 5. DELETE REPORT (admin)
+  // 5. DELETE REPORT
   // ============================================
   static async deleteReport(reportId) {
     const report = await prisma.report.findUnique({ where: { id: reportId } });
@@ -197,7 +199,7 @@ class ReportService {
   }
 
   // ============================================
-  // 7. GET STATS (admin)
+  // 7. GET STATS
   // ============================================
   static async getStats() {
     const [total, pending, resolved, rejected, byCategory, byPriority] = await Promise.all([
@@ -217,14 +219,7 @@ class ReportService {
       }),
     ]);
 
-    return {
-      total,
-      pending,
-      resolved,
-      rejected,
-      byCategory,
-      byPriority,
-    };
+    return { total, pending, resolved, rejected, byCategory, byPriority };
   }
 }
 

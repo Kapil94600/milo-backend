@@ -7,21 +7,22 @@ const { logInfo, logError } = require('../utils/logger');
 
 class SmsService {
   // ============================================
-  // 1. SEND OTP
+  // Send OTP
   // ============================================
   static async sendOTP(phone, otp) {
-    const message = `Your ${config.APP_NAME} OTP is ${otp}. Valid for ${config.OTP_EXPIRE / 60} minutes. Do not share.`;
+    const message = `Your ${config.APP_NAME} OTP is ${otp}. Valid for ${
+      config.OTP_EXPIRE / 60
+    } minutes. Do not share.`;
 
     return this.send(phone, message);
   }
 
   // ============================================
-  // 2. SEND SMS (main dispatcher)
+  // Send SMS (dispatcher)
   // ============================================
   static async send(phone, message) {
     const provider = config.SMS.PROVIDER;
 
-    // Console fallback (development)
     if (provider === 'console' || !config.SMS.API_KEY) {
       console.log(`\n📱 [SMS to ${phone}]: ${message}\n`);
       return { success: true, provider: 'console' };
@@ -40,7 +41,6 @@ class SmsService {
       }
     } catch (error) {
       logError('SMS send failed', error);
-      // Still log to console in dev
       if (!config.IS_PRODUCTION) {
         console.log(`\n📱 [SMS-FAILED-FALLBACK to ${phone}]: ${message}\n`);
       }
@@ -49,7 +49,7 @@ class SmsService {
   }
 
   // ============================================
-  // 3. MSG91
+  // MSG91
   // ============================================
   static async sendMSG91(phone, message) {
     const axios = require('axios');
@@ -58,7 +58,7 @@ class SmsService {
     const payload = {
       flow_id: config.SMS.TEMPLATE_ID || '',
       sender: config.SMS.SENDER_ID,
-      mobiles: `91${phone}`, // country code
+      mobiles: `91${phone}`,
       OTP: message,
     };
 
@@ -75,7 +75,7 @@ class SmsService {
   }
 
   // ============================================
-  // 4. Twilio
+  // Twilio
   // ============================================
   static async sendTwilio(phone, message) {
     const twilio = require('twilio');
@@ -92,7 +92,7 @@ class SmsService {
   }
 
   // ============================================
-  // 5. Fast2SMS (India-specific)
+  // Fast2SMS
   // ============================================
   static async sendFast2SMS(phone, message) {
     const axios = require('axios');

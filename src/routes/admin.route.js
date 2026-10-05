@@ -1,5 +1,5 @@
 // ============================================
-// Admin Routes
+// Admin Routes — Complete with Rate Management
 // ============================================
 
 const express = require('express');
@@ -28,8 +28,16 @@ router.get('/dashboard/top-users', AdminController.getTopUsers);
 // ============================================
 router.get('/users', validate(AdminValidator.getUsers), AdminController.getUsers);
 router.get('/users/:id', AdminController.getUserDetail);
-router.put('/users/:id/status', validate(AdminValidator.updateUserStatus), AdminController.updateUserStatus);
-router.put('/users/:id/block', validate(AdminValidator.blockUser), AdminController.blockUser);
+router.put(
+  '/users/:id/status',
+  validate(AdminValidator.updateUserStatus),
+  AdminController.updateUserStatus
+);
+router.put(
+  '/users/:id/block',
+  validate(AdminValidator.blockUser),
+  AdminController.blockUser
+);
 router.put('/users/:id/unblock', AdminController.unblockUser);
 router.delete('/users/:id', AdminController.deleteUser);
 
@@ -37,31 +45,75 @@ router.delete('/users/:id', AdminController.deleteUser);
 // GIRLS
 // ============================================
 router.get('/girls', validate(AdminValidator.getGirls), AdminController.getGirls);
-router.put('/girls/:id/verify', validate(AdminValidator.verifyGirl), AdminController.verifyGirl);
-router.put('/girls/:id', validate(AdminValidator.updateGirl), AdminController.updateGirl);
+router.put(
+  '/girls/:id/verify',
+  validate(AdminValidator.verifyGirl),
+  AdminController.verifyGirl
+);
+router.put(
+  '/girls/:id',
+  validate(AdminValidator.updateGirl),
+  AdminController.updateGirl
+);
 router.delete('/girls/:id', AdminController.deleteGirl);
+
+// ============================================
+// ⭐ RATE MANAGEMENT (NEW)
+// ============================================
+router.get('/rates/pending', AdminController.getPendingRateChanges);
+router.put(
+  '/rates/pending/:id',
+  validate(AdminValidator.processRateChange),
+  AdminController.processRateChange
+);
+router.get('/rates/global', AdminController.getGlobalRates);
+router.put(
+  '/rates/global',
+  validate(AdminValidator.updateGlobalRates),
+  AdminController.updateGlobalRates
+);
 
 // ============================================
 // WALLET
 // ============================================
 router.get('/wallet/stats', AdminController.getWalletStats);
-router.get('/wallet/transactions', validate(AdminValidator.getTransactions), AdminController.getTransactions);
-router.get('/wallet/withdrawals', validate(AdminValidator.getWithdrawals), AdminController.getWithdrawals);
+router.get(
+  '/wallet/transactions',
+  validate(AdminValidator.getTransactions),
+  AdminController.getTransactions
+);
+router.get(
+  '/wallet/withdrawals',
+  validate(AdminValidator.getWithdrawals),
+  AdminController.getWithdrawals
+);
 
 // ============================================
 // SETTINGS
 // ============================================
 router.get('/settings', AdminController.getSettings);
-router.post('/settings', validate(AdminValidator.createSetting), AdminController.createSetting);
+router.post(
+  '/settings',
+  validate(AdminValidator.createSetting),
+  AdminController.createSetting
+);
 router.get('/settings/:key', AdminController.getSetting);
-router.put('/settings/:key', validate(AdminValidator.updateSetting), AdminController.updateSetting);
+router.put(
+  '/settings/:key',
+  validate(AdminValidator.updateSetting),
+  AdminController.updateSetting
+);
 router.delete('/settings/:key', AdminController.deleteSetting);
 
 // ============================================
 // ADMINS
 // ============================================
 router.get('/admins', AdminController.getAllAdmins);
-router.put('/admins/:id', validate(AdminValidator.updateAdmin), AdminController.updateAdmin);
+router.put(
+  '/admins/:id',
+  validate(AdminValidator.updateAdmin),
+  AdminController.updateAdmin
+);
 router.delete('/admins/:id', AdminController.removeAdmin);
 router.get('/admins/:id/login-history', AdminController.getAdminLoginHistory);
 

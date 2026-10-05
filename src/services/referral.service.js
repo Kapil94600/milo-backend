@@ -22,7 +22,6 @@ class ReferralService {
     if (!user.referralCode) {
       const code = helpers.generateReferralCode(user.name);
 
-      // Ensure unique
       let existing = await prisma.user.findUnique({ where: { referralCode: code } });
       let attempts = 0;
       let finalCode = code;
@@ -49,28 +48,22 @@ class ReferralService {
       where: { referralCode: code.toUpperCase() },
       select: { id: true, name: true, profileImage: true },
     });
-
     if (!referrer) throw AppError.badRequest('Invalid referral code');
 
-    return {
-      isValid: true,
-      referrer,
-    };
+    return { isValid: true, referrer };
   }
 
   // ============================================
-  // 3. CREATE REFERRAL (called during signup)
+  // 3. CREATE REFERRAL
   // ============================================
   static async createReferral(referrerId, referredId, referralCode) {
     if (referrerId === referredId) {
       throw AppError.badRequest('Cannot refer yourself');
     }
 
-    // Check if already referred
     const existing = await prisma.referral.findUnique({ where: { referredId } });
     if (existing) throw AppError.conflict('User already referred');
 
-    // Verify code
     const referrer = await prisma.user.findUnique({
       where: { referralCode: referralCode.toUpperCase() },
     });
@@ -102,7 +95,6 @@ class ReferralService {
       throw AppError.badRequest('Referral already completed');
     }
 
-    // Check conditions (e.g., user made first purchase)
     const conditionsMet = await this.checkConditions(referral.referredId);
     if (!conditionsMet) {
       throw AppError.badRequest('Referral conditions not met');
@@ -132,7 +124,6 @@ class ReferralService {
       throw AppError.badRequest('Already rewarded');
     }
 
-    // Give coins to referrer
     await WalletService.addCoins(
       referral.referrerId,
       bonusCoins,
@@ -141,7 +132,6 @@ class ReferralService {
       { referenceId: referral.id, referenceModel: 'Referral' }
     );
 
-    // Give 50% to referred
     const referredBonus = Math.floor(bonusCoins / 2);
     if (referredBonus > 0) {
       await WalletService.addCoins(
@@ -153,7 +143,6 @@ class ReferralService {
       );
     }
 
-    // Update referral
     const updated = await prisma.referral.update({
       where: { id: referralId },
       data: {
@@ -163,13 +152,12 @@ class ReferralService {
       },
     });
 
-    // Update stats
     await prisma.user.update({
       where: { id: referral.referrerId },
       data: { totalReferrals: { increment: 1 } },
     });
 
-    // Notifications
+    // Notify
     try {
       await NotificationService.createNotification(referral.referrerId, {
         type: 'REWARD',
@@ -185,9 +173,7 @@ class ReferralService {
         channel: 'BOTH',
         priority: 'HIGH',
       });
-    } catch (e) {
-      // silent
-    }
+    } catch (e) {}
 
     return updated;
   }
@@ -215,11 +201,7 @@ class ReferralService {
         include: {
           referred: {
             select: {
-              id: true,
-              name: true,
-              profileImage: true,
-              isVerified: true,
-              createdAt: true,
+              id: true, name: true, profileImage: true, isVerified: true, createdAt: true,
             },
           },
         },
@@ -237,7 +219,7 @@ class ReferralService {
   }
 
   // ============================================
-  // 8. GET MY REFERRAL STATS
+  // 8. GET MY STATS
   // ============================================
   static async getMyStats(userId) {
     const [total, completed, rewarded, pending, coinsEarned] = await Promise.all([
@@ -261,7 +243,7 @@ class ReferralService {
   }
 
   // ============================================
-  // 9. PROCESS ALL PENDING REWARDS (cron)
+  // 9. PROCESS PENDING REWARDS (cron)
   // ============================================
   static async processPendingRewards() {
     const referrals = await prisma.referral.findMany({
@@ -273,15 +255,13 @@ class ReferralService {
       try {
         await this.rewardReferral(ref.id);
         count++;
-      } catch (e) {
-        // silent
-      }
+      } catch (e) {}
     }
     return { processed: count, total: referrals.length };
   }
 
   // ============================================
-  // 10. ADMIN: Get all referrals
+  // 10. GET ALL REFERRALS (admin)
   // ============================================
   static async getAllReferrals({ page = 1, limit = 20, status } = {}) {
     const where = { deletedAt: null };

@@ -1,5 +1,5 @@
 // ============================================
-// Chat Service — Direct & Group Chats, Messages + Coin Billing + Notifications
+// Chat Service — Complete with Girl-Specific Rates
 // ============================================
 
 const { prisma } = require('../config/database');
@@ -10,14 +10,16 @@ const NotificationService = require('./notification.service');
 const { logInfo, logError } = require('../utils/logger');
 const { ChatType, MessageType } = require('../common/enums');
 
-// Default chat costs
+// ============================================
+// Default costs (fallback)
+// ============================================
 const DEFAULT_MESSAGE_COST = 1;
 const DEFAULT_MEDIA_COST = 5;
 const DEFAULT_GIRL_EARNING_PERCENT = 50;
 
 class ChatService {
   // ============================================
-  // HELPER: Get chat costs from settings
+  // 1. HELPER: Get Global Chat Costs
   // ============================================
   static async getChatCosts() {
     try {
@@ -35,7 +37,7 @@ class ChatService {
         girlEarningPercent:
           Number(girlSetting?.value) || DEFAULT_GIRL_EARNING_PERCENT,
       };
-    } catch {
+    } catch (e) {
       return {
         messageCost: DEFAULT_MESSAGE_COST,
         mediaCost: DEFAULT_MEDIA_COST,
@@ -45,7 +47,24 @@ class ChatService {
   }
 
   // ============================================
-  // 1. CREATE / GET DIRECT CHAT
+  // 2. HELPER: Get Girl-Specific Message Rate
+  // ============================================
+  static async getGirlMessageRate(girlUserId) {
+    const girl = await prisma.girl.findUnique({
+      where: { userId: girlUserId },
+      select: { chatMessageRate: true, rateApproved: true },
+    });
+
+    if (!girl || !girl.rateApproved) {
+      const costs = await this.getChatCosts();
+      return costs.messageCost;
+    }
+
+    return girl.chatMessageRate || DEFAULT_MESSAGE_COST;
+  }
+
+  // ============================================
+  // 3. CREATE / GET DIRECT CHAT
   // ============================================
   static async createDirectChat(userId, otherUserId) {
     if (userId === otherUserId) {
@@ -125,16 +144,14 @@ class ChatService {
   }
 
   // ============================================
-  // 2. CREATE GROUP CHAT
+  // 4. CREATE GROUP CHAT
   // ============================================
   static async createGroupChat(userId, name, participantIds = []) {
     if (!name || name.trim().length < 2) {
       throw AppError.badRequest('Group name must be at least 2 characters');
     }
 
-    const uniqueIds = [
-      ...new Set(participantIds.filter((id) => id !== userId)),
-    ];
+    const uniqueIds = [...new Set(participantIds.filter((id) => id !== userId))];
 
     if (uniqueIds.length < 1) {
       throw AppError.badRequest('At least 1 other participant required');
@@ -177,7 +194,7 @@ class ChatService {
   }
 
   // ============================================
-  // 3. GET USER'S CHATS (paginated)
+  // 5. GET USER'S CHATS (paginated)
   // ============================================
   static async getUserChats(userId, { page = 1, limit = 20 } = {}) {
     const skip = (page - 1) * limit;
@@ -213,32 +230,41 @@ class ChatService {
       prisma.chat.count({ where }),
     ]);
 
-    const enriched = await Promise.all(
-      chats.map(async (chat) => {
-        const [lastMessage, unreadCount] = await Promise.all([
-          prisma.message.findFirst({
-            where: { chatId: chat.id, deletedAt: null },
-            orderBy: { createdAt: 'desc' },
-            include: {
-              sender: {
-                select: { id: true, name: true, profileImage: true },
-              },
-            },
-          }),
-          prisma.message.count({
-            where: {
-              chatId: chat.id,
-              senderId: { not: userId },
-              isRead: false,
-              deletedAt: null,
-              NOT: { deletedFor: { has: userId } },
-            },
-          }),
-        ]);
+    // Batch fetch last messages and unread counts (avoid N+1)
+    const chatIds = chats.map((c) => c.id);
 
-        return { ...chat, lastMessage, unreadCount };
-      })
-    );
+    const [lastMessages, unreadGroups] = await Promise.all([
+      prisma.message.findMany({
+        where: { chatId: { in: chatIds }, deletedAt: null },
+        orderBy: { createdAt: 'desc' },
+        distinct: ['chatId'],
+        include: {
+          sender: { select: { id: true, name: true, profileImage: true } },
+        },
+      }),
+      prisma.message.groupBy({
+        by: ['chatId'],
+        where: {
+          chatId: { in: chatIds },
+          senderId: { not: userId },
+          isRead: false,
+          deletedAt: null,
+        },
+        _count: { _all: true },
+      }),
+    ]);
+
+    const lastMsgMap = {};
+    lastMessages.forEach((m) => (lastMsgMap[m.chatId] = m));
+
+    const unreadMap = {};
+    unreadGroups.forEach((g) => (unreadMap[g.chatId] = g._count._all));
+
+    const enriched = chats.map((chat) => ({
+      ...chat,
+      lastMessage: lastMsgMap[chat.id] || null,
+      unreadCount: unreadMap[chat.id] || 0,
+    }));
 
     return {
       data: enriched,
@@ -247,7 +273,7 @@ class ChatService {
   }
 
   // ============================================
-  // 4. GET CHAT BY ID
+  // 6. GET CHAT BY ID
   // ============================================
   static async getChatById(chatId, userId) {
     const chat = await prisma.chat.findUnique({
@@ -270,7 +296,6 @@ class ChatService {
     });
 
     if (!chat || chat.deletedAt) throw AppError.notFound('Chat not found');
-
     if (!chat.participants.some((p) => p.userId === userId)) {
       throw AppError.forbidden('Not a participant of this chat');
     }
@@ -279,7 +304,7 @@ class ChatService {
   }
 
   // ============================================
-  // 5. SEND MESSAGE (WITH COIN DEDUCTION + GIRL CREDIT)
+  // 7. SEND MESSAGE (⭐ with girl-specific rate)
   // ============================================
   static async sendMessage(
     chatId,
@@ -290,120 +315,155 @@ class ChatService {
       throw AppError.badRequest('Message content or media required');
     }
 
+    // Load chat with participants
     const chat = await prisma.chat.findUnique({
       where: { id: chatId },
       include: { participants: true },
     });
 
     if (!chat || !chat.isActive) throw AppError.notFound('Chat not found');
-
     if (!chat.participants.some((p) => p.userId === senderId)) {
       throw AppError.forbidden('Not a participant of this chat');
     }
 
-    // ============================================
-    // COIN DEDUCTION
-    // ============================================
+    // Get costs
     const costs = await this.getChatCosts();
     const isMedia = ['IMAGE', 'VIDEO', 'AUDIO', 'GIF', 'FILE'].includes(type);
-    const coinCost = isMedia ? costs.mediaCost : costs.messageCost;
+    const baseCoinCost = isMedia ? costs.mediaCost : costs.messageCost;
 
-    // Check if sender is a girl — girls don't pay to send messages
+    // Get sender
     const sender = await prisma.user.findUnique({
       where: { id: senderId },
       select: { id: true, role: true, name: true },
     });
+    if (!sender) throw AppError.notFound('Sender not found');
 
-    const isSenderGirl = sender?.role === 'GIRL';
+    const isSenderGirl = sender.role === 'GIRL';
 
-    // Deduct coins only if sender is NOT a girl
-    if (!isSenderGirl && coinCost > 0) {
-      const wallet = await WalletService.getWallet(senderId);
-
-      if (wallet.coins < coinCost) {
-        throw AppError.badRequest(
-          `Insufficient coins. You need at least ${coinCost} coins to send this message. ` +
-            `Current: ${wallet.coins}. Please recharge.`
-        );
-      }
-
-      try {
-        await WalletService.deductCoins(
-          senderId,
-          coinCost,
-          'MESSAGE_COST',
-          `Message sent (${type})`,
-          { referenceModel: 'Chat', referenceId: chatId }
-        );
-      } catch (err) {
-        logError('Chat coin deduction failed', err);
-        throw AppError.badRequest('Failed to deduct coins. Please try again.');
+    // Find girl receiver (for DIRECT chats)
+    let girlReceiver = null;
+    if (chat.type === 'DIRECT') {
+      const otherParticipant = chat.participants.find(
+        (p) => p.userId !== senderId
+      );
+      if (otherParticipant) {
+        const otherUser = await prisma.user.findUnique({
+          where: { id: otherParticipant.userId },
+          select: { id: true, role: true, name: true },
+        });
+        if (otherUser?.role === 'GIRL') {
+          girlReceiver = otherUser;
+        }
       }
     }
 
-    // ============================================
-    // FIND GIRL RECEIVER
-    // ============================================
-    const otherParticipants = chat.participants.filter(
-      (p) => p.userId !== senderId
-    );
+    // ⭐ Determine coin cost
+    // If sender is USER and receiver is GIRL (non-media) → use girl's rate
+    let coinCost = baseCoinCost;
+    if (!isSenderGirl && girlReceiver && !isMedia) {
+      coinCost = await this.getGirlMessageRate(girlReceiver.id);
+    }
 
-    let girlReceiver = null;
+    // ============================================
+    // DEDUCT COINS (atomic, in transaction)
+    // ============================================
+    let message = null;
+    let girlEarning = 0;
 
-    for (const participant of otherParticipants) {
-      const otherUser = await prisma.user.findUnique({
-        where: { id: participant.userId },
-        select: { id: true, role: true, name: true },
+    await prisma.$transaction(async (tx) => {
+      // 1. If user (not girl) and cost > 0 → deduct
+      if (!isSenderGirl && coinCost > 0) {
+        // Atomic check + deduct
+        const updated = await tx.wallet.updateMany({
+          where: {
+            userId: senderId,
+            coins: { gte: coinCost },
+          },
+          data: {
+            coins: { decrement: coinCost },
+            totalSpent: { increment: coinCost },
+          },
+        });
+
+        if (updated.count === 0) {
+          throw AppError.badRequest(
+            `Insufficient coins. Need ${coinCost} coins.`
+          );
+        }
+
+        // Get wallet after update
+        const wallet = await tx.wallet.findUnique({ where: { userId: senderId } });
+
+        // Create debit transaction
+        await tx.transaction.create({
+          data: {
+            userId: senderId,
+            type: 'DEBIT',
+            category: 'MESSAGE_COST',
+            amount: 0,
+            coins: coinCost,
+            description: `Message sent (${type})`,
+            status: 'COMPLETED',
+            balanceAfter: wallet.balance,
+            coinsAfter: wallet.coins,
+            referenceModel: 'Chat',
+            referenceId: chatId,
+          },
+        });
+      }
+
+      // 2. Create message
+      message = await tx.message.create({
+        data: {
+          chatId,
+          senderId,
+          content: content || '',
+          type: type || MessageType.TEXT,
+          mediaUrl,
+          replyToId,
+        },
+        include: {
+          sender: { select: { id: true, name: true, profileImage: true } },
+        },
       });
 
-      if (otherUser?.role === 'GIRL') {
-        girlReceiver = otherUser;
-        break;
-      }
-    }
-
-    // ============================================
-    // CREATE MESSAGE
-    // ============================================
-    const message = await prisma.message.create({
-      data: {
-        chatId,
-        senderId,
-        content: content || '',
-        type: type || MessageType.TEXT,
-        mediaUrl,
-        replyToId,
-      },
-      include: {
-        sender: {
-          select: { id: true, name: true, profileImage: true },
-        },
-      },
-    });
-
-    // ============================================
-    // ✅ CREDIT GIRL (configurable %)
-    // ============================================
-    if (girlReceiver && !isSenderGirl && coinCost > 0) {
-      try {
+      // 3. ⭐ Credit girl (using girl rate)
+      if (girlReceiver && !isSenderGirl && coinCost > 0) {
         const girlPercent = costs.girlEarningPercent;
+        girlEarning = Math.max(1, Math.floor((coinCost * girlPercent) / 100));
 
-        // ✅ Ensure minimum 1 coin if user paid at least 1 coin
-        const girlEarning = Math.max(
-          1,
-          Math.floor((coinCost * girlPercent) / 100)
-        );
+        // Credit to girl
+        const girlWallet = await tx.wallet.upsert({
+          where: { userId: girlReceiver.id },
+          update: {
+            coins: { increment: girlEarning },
+            totalEarned: { increment: girlEarning },
+          },
+          create: {
+            userId: girlReceiver.id,
+            coins: girlEarning,
+            totalEarned: girlEarning,
+          },
+        });
 
-        await WalletService.addCoins(
-          girlReceiver.id,
-          girlEarning,
-          'CHAT_EARNING',
-          `Chat message earnings (${type})`,
-          { referenceModel: 'Message', referenceId: message.id }
-        );
+        await tx.transaction.create({
+          data: {
+            userId: girlReceiver.id,
+            type: 'CREDIT',
+            category: 'CHAT_EARNING',
+            amount: 0,
+            coins: girlEarning,
+            description: `Chat message earnings (${type})`,
+            status: 'COMPLETED',
+            balanceAfter: girlWallet.balance,
+            coinsAfter: girlWallet.coins,
+            referenceModel: 'Message',
+            referenceId: message.id,
+          },
+        });
 
-        // Update girl's stats
-        await prisma.girl.update({
+        // Update girl stats
+        await tx.girl.update({
           where: { userId: girlReceiver.id },
           data: {
             totalMessages: { increment: 1 },
@@ -414,51 +474,42 @@ class ChatService {
             earningsThisMonth: { increment: girlEarning },
           },
         });
-
-        logInfo(
-          `Girl ${girlReceiver.id} earned ${girlEarning} coins from chat message`
-        );
-      } catch (err) {
-        logError('Girl chat earning credit failed', err);
-        // Don't throw — message already sent
       }
-    }
 
-    // ============================================
-    // Update chat lastMessageAt
-    // ============================================
-    await prisma.chat.update({
-      where: { id: chatId },
-      data: { lastMessageAt: new Date(), lastMessageId: message.id },
-    });
+      // 4. Update chat lastMessage
+      await tx.chat.update({
+        where: { id: chatId },
+        data: { lastMessageAt: new Date(), lastMessageId: message.id },
+      });
 
-    // ============================================
-    // Update sender stats
-    // ============================================
-    await prisma.user.update({
-      where: { id: senderId },
-      data: { totalMessages: { increment: 1 } },
-    });
-
-    // If girl is sender, update her stats too
-    if (isSenderGirl) {
-      await prisma.girl.update({
-        where: { userId: senderId },
+      // 5. Update sender stats
+      await tx.user.update({
+        where: { id: senderId },
         data: { totalMessages: { increment: 1 } },
       });
-    }
+
+      // 6. If sender is a girl, update her stats too
+      if (isSenderGirl) {
+        await tx.girl.update({
+          where: { userId: senderId },
+          data: { totalMessages: { increment: 1 } },
+        });
+      }
+    });
 
     // ============================================
-    // Notifications
+    // NOTIFICATIONS (outside transaction, fire-and-forget)
     // ============================================
     (async () => {
       try {
-        for (const participant of otherParticipants) {
-          await NotificationService.sendChatNotification(
-            senderId,
-            participant.userId,
-            message
-          );
+        for (const participant of chat.participants) {
+          if (participant.userId !== senderId) {
+            await NotificationService.sendChatNotification(
+              senderId,
+              participant.userId,
+              message
+            );
+          }
         }
       } catch (e) {
         logError('Chat notification failed', e);
@@ -466,14 +517,14 @@ class ChatService {
     })();
 
     logInfo(
-      `Message sent in chat ${chatId} by ${senderId} (cost: ${coinCost} coins)`
+      `Message sent in chat ${chatId} by ${senderId} (cost: ${coinCost}, girl earning: ${girlEarning})`
     );
 
     return { ...message, coinCost };
   }
 
   // ============================================
-  // 6. GET MESSAGES
+  // 8. GET MESSAGES
   // ============================================
   static async getMessages(chatId, userId, { page = 1, limit = 50 } = {}) {
     const participant = await prisma.chatParticipant.findUnique({
@@ -514,7 +565,7 @@ class ChatService {
   }
 
   // ============================================
-  // 7. MARK AS READ
+  // 9. MARK AS READ
   // ============================================
   static async markAsRead(chatId, userId) {
     const result = await prisma.message.updateMany({
@@ -534,18 +585,16 @@ class ChatService {
   }
 
   // ============================================
-  // 8. EDIT MESSAGE
+  // 10. EDIT MESSAGE
   // ============================================
   static async editMessage(messageId, userId, newContent) {
     const message = await prisma.message.findUnique({
       where: { id: messageId },
     });
     if (!message) throw AppError.notFound('Message not found');
-
     if (message.senderId !== userId) {
       throw AppError.forbidden('Only sender can edit');
     }
-
     if (message.isDeletedForAll) {
       throw AppError.badRequest('Cannot edit deleted message');
     }
@@ -561,7 +610,7 @@ class ChatService {
   }
 
   // ============================================
-  // 9. DELETE MESSAGE (for me)
+  // 11. DELETE MESSAGE (for me)
   // ============================================
   static async deleteMessageForMe(messageId, userId) {
     const message = await prisma.message.findUnique({
@@ -578,14 +627,13 @@ class ChatService {
   }
 
   // ============================================
-  // 10. DELETE MESSAGE (for everyone)
+  // 12. DELETE MESSAGE (for everyone)
   // ============================================
   static async deleteMessageForAll(messageId, userId) {
     const message = await prisma.message.findUnique({
       where: { id: messageId },
     });
     if (!message) throw AppError.notFound('Message not found');
-
     if (message.senderId !== userId) {
       throw AppError.forbidden('Only sender can delete for everyone');
     }
@@ -601,7 +649,7 @@ class ChatService {
   }
 
   // ============================================
-  // 11. ADD REACTION
+  // 13. ADD REACTION
   // ============================================
   static async addReaction(messageId, userId, reaction) {
     if (!reaction || reaction.length > 10) {
@@ -616,7 +664,7 @@ class ChatService {
   }
 
   // ============================================
-  // 12. REMOVE REACTION
+  // 14. REMOVE REACTION
   // ============================================
   static async removeReaction(messageId, userId) {
     await prisma.messageReaction.deleteMany({
@@ -626,7 +674,7 @@ class ChatService {
   }
 
   // ============================================
-  // 13. ADD PARTICIPANTS (group)
+  // 15. ADD PARTICIPANTS (group)
   // ============================================
   static async addParticipants(chatId, adminId, userIds = []) {
     const chat = await prisma.chat.findUnique({
@@ -635,12 +683,10 @@ class ChatService {
     });
 
     if (!chat) throw AppError.notFound('Chat not found');
-    if (chat.type !== ChatType.GROUP)
-      throw AppError.badRequest('Not a group chat');
+    if (chat.type !== ChatType.GROUP) throw AppError.badRequest('Not a group chat');
 
     const admin = chat.participants.find((p) => p.userId === adminId);
-    if (!admin || !admin.isAdmin)
-      throw AppError.forbidden('Only admin can add');
+    if (!admin || !admin.isAdmin) throw AppError.forbidden('Only admin can add');
 
     const existingIds = chat.participants.map((p) => p.userId);
     const newIds = userIds.filter((id) => !existingIds.includes(id));
@@ -655,7 +701,7 @@ class ChatService {
   }
 
   // ============================================
-  // 14. REMOVE PARTICIPANT
+  // 16. REMOVE PARTICIPANT
   // ============================================
   static async removeParticipant(chatId, adminId, userId) {
     const chat = await prisma.chat.findUnique({
@@ -664,15 +710,11 @@ class ChatService {
     });
 
     if (!chat) throw AppError.notFound('Chat not found');
-    if (chat.type !== ChatType.GROUP)
-      throw AppError.badRequest('Not a group chat');
+    if (chat.type !== ChatType.GROUP) throw AppError.badRequest('Not a group chat');
 
     const admin = chat.participants.find((p) => p.userId === adminId);
-    if (!admin || !admin.isAdmin)
-      throw AppError.forbidden('Only admin can remove');
-
-    if (adminId === userId)
-      throw AppError.badRequest('Admin cannot remove self');
+    if (!admin || !admin.isAdmin) throw AppError.forbidden('Only admin can remove');
+    if (adminId === userId) throw AppError.badRequest('Admin cannot remove self');
 
     await prisma.chatParticipant.deleteMany({
       where: { chatId, userId },
@@ -682,7 +724,7 @@ class ChatService {
   }
 
   // ============================================
-  // 15. LEAVE GROUP
+  // 17. LEAVE GROUP
   // ============================================
   static async leaveGroup(chatId, userId) {
     const chat = await prisma.chat.findUnique({
@@ -691,14 +733,11 @@ class ChatService {
     });
 
     if (!chat) throw AppError.notFound('Chat not found');
-    if (chat.type !== ChatType.GROUP)
-      throw AppError.badRequest('Not a group chat');
+    if (chat.type !== ChatType.GROUP) throw AppError.badRequest('Not a group chat');
 
     await prisma.chatParticipant.deleteMany({ where: { chatId, userId } });
 
-    const remaining = await prisma.chatParticipant.count({
-      where: { chatId },
-    });
+    const remaining = await prisma.chatParticipant.count({ where: { chatId } });
     if (remaining === 0) {
       await prisma.chat.update({
         where: { id: chatId },
@@ -710,7 +749,7 @@ class ChatService {
   }
 
   // ============================================
-  // 16. GET UNREAD COUNT (total)
+  // 18. GET UNREAD COUNT (total)
   // ============================================
   static async getTotalUnreadCount(userId) {
     const count = await prisma.message.count({
@@ -730,7 +769,7 @@ class ChatService {
   }
 
   // ============================================
-  // 17. SEARCH MESSAGES
+  // 19. SEARCH MESSAGES
   // ============================================
   static async searchMessages(userId, query, chatId = null) {
     if (!query || query.length < 2) {
@@ -761,7 +800,7 @@ class ChatService {
   }
 
   // ============================================
-  // 18. DELETE CHAT (soft)
+  // 20. DELETE CHAT (soft)
   // ============================================
   static async deleteChat(chatId, userId) {
     const chat = await prisma.chat.findUnique({ where: { id: chatId } });
@@ -776,9 +815,7 @@ class ChatService {
       where: { chatId_userId: { chatId, userId } },
     });
 
-    const remaining = await prisma.chatParticipant.count({
-      where: { chatId },
-    });
+    const remaining = await prisma.chatParticipant.count({ where: { chatId } });
     if (remaining === 0) {
       await prisma.chat.update({
         where: { id: chatId },
@@ -787,6 +824,100 @@ class ChatService {
     }
 
     return { message: 'Chat deleted' };
+  }
+
+  // ============================================
+  // 21. ADMIN — Get All Chats (for monitoring)
+  // ============================================
+  static async getAllChats({
+    page = 1,
+    limit = 20,
+    type,
+    search,
+    userId,
+  } = {}) {
+    const where = { deletedAt: null };
+    if (type) where.type = type;
+    if (userId) {
+      where.participants = { some: { userId } };
+    }
+    if (search) {
+      where.OR = [
+        { name: { contains: search, mode: 'insensitive' } },
+        { description: { contains: search, mode: 'insensitive' } },
+      ];
+    }
+
+    const skip = (page - 1) * limit;
+
+    const [chats, total] = await Promise.all([
+      prisma.chat.findMany({
+        where,
+        include: {
+          participants: {
+            include: {
+              user: {
+                select: {
+                  id: true,
+                  name: true,
+                  phone: true,
+                  profileImage: true,
+                  role: true,
+                },
+              },
+            },
+          },
+          _count: { select: { messages: true } },
+        },
+        orderBy: { lastMessageAt: 'desc' },
+        skip,
+        take: limit,
+      }),
+      prisma.chat.count({ where }),
+    ]);
+
+    const enriched = chats.map((c) => ({
+      ...c,
+      messageCount: c._count.messages,
+      _count: undefined,
+    }));
+
+    return {
+      data: enriched,
+      pagination: helpers.buildPagination(page, limit, total),
+    };
+  }
+
+  // ============================================
+  // 22. ADMIN — Get Messages of a Chat (monitoring)
+  // ============================================
+  static async getChatMessagesAdmin(chatId, { page = 1, limit = 50 } = {}) {
+    const chat = await prisma.chat.findUnique({ where: { id: chatId } });
+    if (!chat) throw AppError.notFound('Chat not found');
+
+    const skip = (page - 1) * limit;
+
+    const [messages, total] = await Promise.all([
+      prisma.message.findMany({
+        where: { chatId, deletedAt: null },
+        include: {
+          sender: {
+            select: { id: true, name: true, profileImage: true, role: true },
+          },
+        },
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: limit,
+      }),
+      prisma.message.count({ where: { chatId, deletedAt: null } }),
+    ]);
+
+    messages.reverse();
+
+    return {
+      data: messages,
+      pagination: helpers.buildPagination(page, limit, total),
+    };
   }
 }
 

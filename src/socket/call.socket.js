@@ -8,12 +8,12 @@ const { SOCKET_EVENTS, CallStatus } = require('../common/constants');
 
 // Auto-mark missed calls after 30 sec
 const MISSED_TIMEOUT_MS = 30000;
-const pendingMissTimers = new Map(); // callId -> setTimeout
+const pendingMissTimers = new Map();
 
 // ============================================
 // Register Call Handlers
 // ============================================
-const registerCallHandlers = (io, socket, helpers) => {
+const registerCallHandlers = (io, socket, helpers = {}) => {
   const userId = socket.data.userId;
   const user = socket.data.user;
   const { getUserSocketId } = helpers;
@@ -23,9 +23,14 @@ const registerCallHandlers = (io, socket, helpers) => {
   // ============================================
   socket.on(SOCKET_EVENTS.CALL_INITIATE, async (data) => {
     try {
-      const { receiverId, type = 'VOICE', quality = 'MEDIUM' } = data;
+      const { receiverId, type = 'VOICE', quality = 'MEDIUM' } = data || {};
 
-      // Create call in DB
+      if (!receiverId) {
+        socket.emit(SOCKET_EVENTS.ERROR, { message: 'receiverId is required' });
+        return;
+      }
+
+      // Create call in DB (uses girl-specific rates)
       const call = await CallService.initiateCall(userId, receiverId, type, quality);
 
       // Find receiver's socket
@@ -38,7 +43,7 @@ const registerCallHandlers = (io, socket, helpers) => {
         return;
       }
 
-      // Notify receiver — use consistent event naming
+      // Notify receiver
       const incomingEvent =
         type === 'VIDEO'
           ? SOCKET_EVENTS.CALL_VIDEO_INCOMING
@@ -51,6 +56,7 @@ const registerCallHandlers = (io, socket, helpers) => {
         callerImage: user.profileImage,
         type,
         quality,
+        coinRate: call.coinRate,
       });
 
       // Notify caller
@@ -67,9 +73,10 @@ const registerCallHandlers = (io, socket, helpers) => {
         try {
           const c = await CallService.markAsMissed(call.id);
           if (c && c.status === CallStatus.MISSED) {
-            // Notify both
             socket.emit(SOCKET_EVENTS.CALL_MISSED, { callId: call.id });
-            io.to(receiverSocketId).emit(SOCKET_EVENTS.CALL_MISSED, { callId: call.id });
+            io.to(receiverSocketId).emit(SOCKET_EVENTS.CALL_MISSED, {
+              callId: call.id,
+            });
           }
         } catch (e) {
           logError('Missed timer error', e);
@@ -91,7 +98,8 @@ const registerCallHandlers = (io, socket, helpers) => {
   // ============================================
   socket.on(SOCKET_EVENTS.CALL_ACCEPT, async (data) => {
     try {
-      const { callId, callerId } = data;
+      const { callId, callerId } = data || {};
+      if (!callId) return;
 
       // Clear missed timer
       if (pendingMissTimers.has(callId)) {
@@ -122,7 +130,8 @@ const registerCallHandlers = (io, socket, helpers) => {
   // ============================================
   socket.on(SOCKET_EVENTS.CALL_REJECT, async (data) => {
     try {
-      const { callId, callerId } = data;
+      const { callId, callerId } = data || {};
+      if (!callId) return;
 
       if (pendingMissTimers.has(callId)) {
         clearTimeout(pendingMissTimers.get(callId));
@@ -151,7 +160,8 @@ const registerCallHandlers = (io, socket, helpers) => {
   // ============================================
   socket.on(SOCKET_EVENTS.CALL_END, async (data) => {
     try {
-      const { callId, targetUserId } = data;
+      const { callId, targetUserId } = data || {};
+      if (!callId) return;
 
       if (pendingMissTimers.has(callId)) {
         clearTimeout(pendingMissTimers.get(callId));
@@ -187,11 +197,12 @@ const registerCallHandlers = (io, socket, helpers) => {
   });
 
   // ============================================
-  // CANCEL CALL (before accept)
+  // CANCEL CALL
   // ============================================
   socket.on(SOCKET_EVENTS.CALL_CANCEL, async (data) => {
     try {
-      const { callId, receiverId } = data;
+      const { callId, receiverId } = data || {};
+      if (!callId) return;
 
       if (pendingMissTimers.has(callId)) {
         clearTimeout(pendingMissTimers.get(callId));
@@ -216,7 +227,9 @@ const registerCallHandlers = (io, socket, helpers) => {
   // WEBRTC SIGNALING
   // ============================================
   socket.on(SOCKET_EVENTS.WEBRTC_OFFER, (data) => {
-    const { targetUserId, offer, callId } = data;
+    const { targetUserId, offer, callId } = data || {};
+    if (!targetUserId) return;
+
     const targetSocketId = getUserSocketId(targetUserId);
     if (targetSocketId) {
       io.to(targetSocketId).emit(SOCKET_EVENTS.WEBRTC_OFFER, {
@@ -228,7 +241,9 @@ const registerCallHandlers = (io, socket, helpers) => {
   });
 
   socket.on(SOCKET_EVENTS.WEBRTC_ANSWER, (data) => {
-    const { targetUserId, answer, callId } = data;
+    const { targetUserId, answer, callId } = data || {};
+    if (!targetUserId) return;
+
     const targetSocketId = getUserSocketId(targetUserId);
     if (targetSocketId) {
       io.to(targetSocketId).emit(SOCKET_EVENTS.WEBRTC_ANSWER, {
@@ -240,7 +255,9 @@ const registerCallHandlers = (io, socket, helpers) => {
   });
 
   socket.on(SOCKET_EVENTS.WEBRTC_ICE_CANDIDATE, (data) => {
-    const { targetUserId, candidate, callId } = data;
+    const { targetUserId, candidate, callId } = data || {};
+    if (!targetUserId) return;
+
     const targetSocketId = getUserSocketId(targetUserId);
     if (targetSocketId) {
       io.to(targetSocketId).emit(SOCKET_EVENTS.WEBRTC_ICE_CANDIDATE, {

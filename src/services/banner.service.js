@@ -10,24 +10,16 @@ const { logInfo } = require('../utils/logger');
 
 class BannerService {
   // ============================================
-  // HELPER: Resolve image URL (from file OR url)
+  // HELPER: Resolve image
   // ============================================
   static async resolveImage(data, folder = 'banners') {
-    // 1. If file uploaded (multipart), use it
     if (data._uploadedFile) {
-      console.log('✅ [Banner] Using uploaded file:', data._uploadedFile.filename);
       const result = await UploadService.uploadFile(data._uploadedFile, folder);
       return result.url;
     }
-
-    // 2. If image URL provided directly
     if (data.image && typeof data.image === 'string' && data.image.trim()) {
-      console.log('✅ [Banner] Using image URL:', data.image);
       return data.image.trim();
     }
-
-    // 3. Both missing
-    console.log('❌ [Banner] No file and no image URL');
     throw AppError.badRequest('Banner image is required (URL or file upload)');
   }
 
@@ -35,12 +27,6 @@ class BannerService {
   // 1. CREATE BANNER
   // ============================================
   static async createBanner(data, adminId) {
-    console.log('🔨 [Banner] Creating banner with data:', {
-      title: data.title,
-      hasFile: !!data._uploadedFile,
-      hasImageUrl: !!data.image,
-    });
-
     const imageUrl = await this.resolveImage(data, 'banners');
 
     return prisma.banner.create({
@@ -65,7 +51,7 @@ class BannerService {
   }
 
   // ============================================
-  // 2. GET ACTIVE BANNERS (public)
+  // 2. GET ACTIVE BANNERS
   // ============================================
   static async getActiveBanners({ platform = 'ALL', role = 'USER' } = {}) {
     const now = new Date();
@@ -124,31 +110,20 @@ class BannerService {
   }
 
   // ============================================
-  // 5. UPDATE BANNER (with file upload support)
+  // 5. UPDATE BANNER
   // ============================================
   static async updateBanner(id, data, adminId) {
     const existing = await prisma.banner.findUnique({ where: { id } });
     if (!existing) throw AppError.notFound('Banner not found');
 
     const allowed = [
-      'title',
-      'subtitle',
-      'linkType',
-      'link',
-      'linkData',
-      'position',
-      'displayOrder',
-      'isActive',
-      'isFeatured',
-      'startDate',
-      'endDate',
-      'platform',
-      'roles',
+      'title', 'subtitle', 'linkType', 'link', 'linkData',
+      'position', 'displayOrder', 'isActive', 'isFeatured',
+      'startDate', 'endDate', 'platform', 'roles',
     ];
     const updates = helpers.pick(data, allowed);
     updates.updatedBy = adminId;
 
-    // Handle image (file OR url)
     if (data._uploadedFile || data.image) {
       updates.image = await this.resolveImage(data, 'banners');
     }
@@ -160,7 +135,7 @@ class BannerService {
   }
 
   // ============================================
-  // 6. DELETE BANNER (soft)
+  // 6. DELETE BANNER
   // ============================================
   static async deleteBanner(id) {
     const existing = await prisma.banner.findUnique({ where: { id } });

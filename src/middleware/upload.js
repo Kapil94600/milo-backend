@@ -9,16 +9,13 @@ const crypto = require('crypto');
 const config = require('../config');
 const AppError = require('../utils/AppError');
 
-// ============================================
 // Ensure upload dir exists
-// ============================================
 const uploadRoot = path.resolve(process.cwd(), config.UPLOAD_DIR);
 if (!fs.existsSync(uploadRoot)) {
   fs.mkdirSync(uploadRoot, { recursive: true });
 }
 
-// ✅ All sub-folders (add promos, coin-packages)
-// ✅ All sub-folders (add subscription-plans)
+// Sub-folders
 const subFolders = [
   'profiles',
   'covers',
@@ -28,7 +25,7 @@ const subFolders = [
   'verification',
   'promos',
   'coin-packages',
-  'subscription-plans',   // ✅ NEW
+  'subscription-plans',
   'temp',
 ];
 for (const sub of subFolders) {
@@ -36,9 +33,7 @@ for (const sub of subFolders) {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 }
 
-// ============================================
 // Storage
-// ============================================
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
     let folder = 'temp';
@@ -55,9 +50,7 @@ const storage = multer.diskStorage({
   },
 });
 
-// ============================================
 // File filters
-// ============================================
 const imageFilter = (req, file, cb) => {
   const allowed = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/gif'];
   if (allowed.includes(file.mimetype)) return cb(null, true);
@@ -96,28 +89,21 @@ const mediaFilter = (req, file, cb) => {
   cb(new AppError('Only images and videos are allowed', 400), false);
 };
 
-// ============================================
 // Limits
-// ============================================
 const limits = {
-  fileSize: config.MAX_FILE_SIZE_MB * 1024 * 1024, // default 10 MB
+  fileSize: config.MAX_FILE_SIZE_MB * 1024 * 1024,
   files: 5,
 };
 
-// ============================================
 // Exported upload instances
-// ============================================
 const upload = multer({ storage, limits });
-
 const uploadImage = multer({ storage, fileFilter: imageFilter, limits });
 const uploadVideo = multer({ storage, fileFilter: videoFilter, limits });
 const uploadAudio = multer({ storage, fileFilter: audioFilter, limits });
 const uploadDocument = multer({ storage, fileFilter: documentFilter, limits });
 const uploadMedia = multer({ storage, fileFilter: mediaFilter, limits });
 
-// ============================================
 // Multer error wrapper
-// ============================================
 const handleMulterError = (err, req, res, next) => {
   if (err instanceof multer.MulterError) {
     if (err.code === 'LIMIT_FILE_SIZE') {

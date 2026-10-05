@@ -1,21 +1,17 @@
 // ============================================
 // Audit Log Middleware
-// Automatically logs all mutating requests
 // ============================================
 
 const AuditService = require('../services/audit.service');
 const { logError } = require('../utils/logger');
 
-// ============================================
-// Auto-log all POST/PUT/PATCH/DELETE
-// ============================================
+// Auto-log mutating requests
 const autoAudit = (req, res, next) => {
   const method = req.method.toUpperCase();
   if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) {
     return next();
   }
 
-  // Skip audit for these paths (avoid noise + recursion)
   const skipPaths = [
     '/api/audit-logs',
     '/api/health',
@@ -25,16 +21,13 @@ const autoAudit = (req, res, next) => {
     return next();
   }
 
-  // Guard against multiple res.json calls
   let logged = false;
-
   const originalJson = res.json.bind(res);
 
   res.json = (body) => {
     if (!logged) {
       logged = true;
 
-      // Fire-and-forget (don't block response)
       setImmediate(() => {
         try {
           const resource =
@@ -69,9 +62,7 @@ const autoAudit = (req, res, next) => {
   next();
 };
 
-// ============================================
-// Manual log helper for admin actions
-// ============================================
+// Manual log helper
 const logAction = async (req, action, resource, resourceId = null, changes = null) => {
   try {
     return await AuditService.log({

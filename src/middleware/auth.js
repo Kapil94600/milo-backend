@@ -12,7 +12,7 @@ const asyncHandler = require('../utils/asyncHandler');
 const { logDebug, logError } = require('../utils/logger');
 const { ROLES, STATUS } = require('../common/constants');
 
-const USER_CACHE_TTL = 300; // 5 minutes
+const USER_CACHE_TTL = 300;
 
 // ============================================
 // Fetch user (with optional cache)
@@ -20,7 +20,6 @@ const USER_CACHE_TTL = 300; // 5 minutes
 const fetchUser = async (userId) => {
   const cacheKey = `user:auth:${userId}`;
 
-  // Try cache first
   if (isRedisAvailable()) {
     const cached = await cache.get(cacheKey);
     if (cached) return cached;
@@ -41,7 +40,6 @@ const fetchUser = async (userId) => {
     },
   });
 
-  // Cache for 5 min
   if (user && isRedisAvailable()) {
     await cache.set(cacheKey, user, USER_CACHE_TTL).catch(() => {});
   }
@@ -55,12 +53,9 @@ const fetchUser = async (userId) => {
 const authenticate = asyncHandler(async (req, res, next) => {
   let token = null;
 
-  // 1. Authorization header
   if (req.headers.authorization && req.headers.authorization.startsWith('Bearer ')) {
     token = req.headers.authorization.split(' ')[1];
-  }
-  // 2. Query param (for socket fallback / webhooks)
-  else if (req.query.token) {
+  } else if (req.query.token) {
     token = req.query.token;
   }
 
@@ -91,7 +86,6 @@ const authenticate = asyncHandler(async (req, res, next) => {
     return ApiResponse.forbidden(res, 'Account is blocked or inactive');
   }
 
-  // Attach user (both id and _id for compatibility)
   req.user = { ...user, _id: user.id };
   req.token = token;
   req.userId = user.id;
@@ -99,7 +93,7 @@ const authenticate = asyncHandler(async (req, res, next) => {
 });
 
 // ============================================
-// Optional auth (doesn't fail if no token)
+// Optional auth
 // ============================================
 const optionalAuth = asyncHandler(async (req, res, next) => {
   try {
@@ -118,7 +112,6 @@ const optionalAuth = asyncHandler(async (req, res, next) => {
       req.userId = user.id;
     }
   } catch (e) {
-    // Silent fail — but log for debugging
     logDebug('optionalAuth: token invalid or expired', { error: e.message });
   }
   next();
@@ -132,28 +125,15 @@ const authorize = (...allowedRoles) => {
     if (!req.user) {
       return ApiResponse.unauthorized(res, 'User not authenticated');
     }
-
     if (!allowedRoles.includes(req.user.role)) {
       return ApiResponse.forbidden(res, 'Insufficient permissions');
     }
-
     next();
   };
 };
 
-// ============================================
-// Admin-only
-// ============================================
 const requireAdmin = authorize(ROLES.ADMIN);
-
-// ============================================
-// Girl-only
-// ============================================
 const requireGirl = authorize(ROLES.GIRL);
-
-// ============================================
-// User-only (not admin)
-// ============================================
 const requireUser = authorize(ROLES.USER);
 
 // ============================================
@@ -188,7 +168,7 @@ const denyAdmins = (req, res, next) => {
 };
 
 // ============================================
-// Invalidate user cache (call after updates)
+// Invalidate user cache
 // ============================================
 const invalidateUserCache = async (userId) => {
   if (isRedisAvailable()) {

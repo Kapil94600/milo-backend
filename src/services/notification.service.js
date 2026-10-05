@@ -1,5 +1,5 @@
 // ============================================
-// Notification Service — Database + FCM Push + Email + Socket
+// Notification Service — DB + FCM + Email + Socket
 // ============================================
 
 const { prisma } = require('../config/database');
@@ -7,23 +7,22 @@ const FCMService = require('./fcm.service');
 const EmailService = require('./email.service');
 const { logInfo, logError, logWarn } = require('../utils/logger');
 
-// Socket.IO instance (set by socket/index.js)
+// Socket.IO instance
 let ioInstance = null;
 
 class NotificationService {
   // ============================================
-  // Set Socket.IO instance (called on startup)
+  // Set Socket.IO instance
   // ============================================
   static setSocketIO(io) {
     ioInstance = io;
   }
 
   // ============================================
-  // 1. CREATE NOTIFICATION (Main)
+  // 1. CREATE NOTIFICATION (main)
   // ============================================
   static async createNotification(userId, data) {
     try {
-      // 1. Save to DB
       const notification = await prisma.notification.create({
         data: {
           userId,
@@ -40,7 +39,7 @@ class NotificationService {
         },
       });
 
-      // 2. Emit via Socket.IO (in-app real-time)
+      // Socket.IO — in-app real-time
       if (ioInstance) {
         try {
           ioInstance.to(`user:${userId}`).emit('notification', {
@@ -60,7 +59,7 @@ class NotificationService {
         }
       }
 
-      // 3. Send Push (if channel includes PUSH or BOTH)
+      // Push (FCM)
       if (data.channel === 'PUSH' || data.channel === 'BOTH') {
         FCMService.sendToUser(
           userId,
@@ -80,7 +79,7 @@ class NotificationService {
         ).catch((e) => logError('FCM push failed', e));
       }
 
-      // 4. Send Email (if channel includes EMAIL)
+      // Email
       if (data.channel === 'EMAIL' && data.email) {
         EmailService.send({
           to: data.email,
@@ -97,7 +96,7 @@ class NotificationService {
   }
 
   // ============================================
-  // 2. Get My Notifications (paginated)
+  // 2. Get My Notifications
   // ============================================
   static async getMyNotifications(userId, { page = 1, limit = 20 } = {}) {
     const skip = (page - 1) * limit;
@@ -125,11 +124,6 @@ class NotificationService {
     };
   }
 
-  // Alias for backward compat
-  static async getUserNotifications(userId, options = {}) {
-    return this.getMyNotifications(userId, options);
-  }
-
   // ============================================
   // 3. Get Unread Count
   // ============================================
@@ -146,7 +140,6 @@ class NotificationService {
     const notification = await prisma.notification.findFirst({
       where: { id: notificationId, userId },
     });
-
     if (!notification) return null;
 
     const updated = await prisma.notification.update({
@@ -154,7 +147,6 @@ class NotificationService {
       data: { isRead: true, readAt: new Date() },
     });
 
-    // Emit via socket
     if (ioInstance) {
       ioInstance.to(`user:${userId}`).emit('notification:read', {
         notificationId,
@@ -181,7 +173,7 @@ class NotificationService {
   }
 
   // ============================================
-  // 6. Delete Notification (soft)
+  // 6. Delete Notification
   // ============================================
   static async deleteNotification(notificationId, userId) {
     const result = await prisma.notification.updateMany({
@@ -199,7 +191,7 @@ class NotificationService {
   }
 
   // ============================================
-  // 7. Delete All Notifications
+  // 7. Delete All
   // ============================================
   static async deleteAll(userId) {
     const result = await prisma.notification.updateMany({
@@ -214,20 +206,15 @@ class NotificationService {
     return result;
   }
 
-  // Alias
-  static async deleteAllNotifications(userId) {
-    return this.deleteAll(userId);
-  }
-
   // ============================================
-  // 8. Send to Single User (Admin)
+  // 8. Send to Single User (admin)
   // ============================================
   static async sendToUser(userId, data) {
     return this.createNotification(userId, data);
   }
 
   // ============================================
-  // 9. Send to Multiple Users (Admin)
+  // 9. Send Bulk
   // ============================================
   static async sendBulk(userIds, data) {
     return this.sendToMultipleUsers(userIds, data);
@@ -235,9 +222,8 @@ class NotificationService {
 
   static async sendToMultipleUsers(userIds, data) {
     const notifications = [];
-
-    // Process in batches of 50 to avoid overload
     const BATCH_SIZE = 50;
+
     for (let i = 0; i < userIds.length; i += BATCH_SIZE) {
       const batch = userIds.slice(i, i + BATCH_SIZE);
 
@@ -256,7 +242,7 @@ class NotificationService {
       });
     }
 
-    // Send push to all tokens in one batch (efficient)
+    // Send push in batch
     if (data.channel === 'PUSH' || data.channel === 'BOTH') {
       try {
         const devices = await prisma.device.findMany({
@@ -265,8 +251,6 @@ class NotificationService {
         });
 
         const tokens = devices.map((d) => d.token);
-
-        // FCM batch send (max 500 per request)
         const FCM_BATCH = 500;
         for (let i = 0; i < tokens.length; i += FCM_BATCH) {
           const tokenBatch = tokens.slice(i, i + FCM_BATCH);
@@ -299,7 +283,7 @@ class NotificationService {
   }
 
   // ============================================
-  // 10. Broadcast to All Users (Admin)
+  // 10. Broadcast
   // ============================================
   static async broadcast(data, role = null) {
     return this.broadcastToAllUsers(data, role);
@@ -326,7 +310,6 @@ class NotificationService {
       where: { id: senderId },
       select: { name: true, profileImage: true },
     });
-
     if (!sender) return null;
 
     return this.createNotification(receiverId, {
@@ -355,7 +338,6 @@ class NotificationService {
       where: { id: callerId },
       select: { name: true, profileImage: true },
     });
-
     if (!caller) return null;
 
     return this.createNotification(receiverId, {
@@ -379,9 +361,7 @@ class NotificationService {
     return this.createNotification(userId, {
       type: 'COIN',
       title: `${type === 'CREDIT' ? '💰 Coins Received' : '📉 Coins Used'}`,
-      body:
-        description ||
-        `You ${type === 'CREDIT' ? 'received' : 'used'} ${amount} coins`,
+      body: description || `You ${type === 'CREDIT' ? 'received' : 'used'} ${amount} coins`,
       data: { amount, type },
       action: 'OPEN_WALLET',
       channel: 'BOTH',
@@ -430,11 +410,8 @@ class NotificationService {
     };
 
     const bodies = {
-      APPROVED:
-        'Your girl registration has been approved! You can now start earning.',
-      REJECTED:
-        reason ||
-        'Your girl registration was not approved. You can try again later.',
+      APPROVED: 'Your girl registration has been approved! You can now start earning.',
+      REJECTED: reason || 'Your girl registration was not approved. You can try again later.',
     };
 
     return this.createNotification(userId, {
@@ -451,12 +428,7 @@ class NotificationService {
   // ============================================
   // 17. Gift Notification Helper
   // ============================================
-  static async sendGiftNotification(
-    receiverId,
-    senderId,
-    gift,
-    isAnonymous = false
-  ) {
+  static async sendGiftNotification(receiverId, senderId, gift, isAnonymous = false) {
     let senderName = 'Someone';
     let senderImage = null;
 
@@ -488,12 +460,7 @@ class NotificationService {
   // ============================================
   // 18. Withdrawal Notification Helper
   // ============================================
-  static async sendWithdrawalNotification(
-    userId,
-    amount,
-    status,
-    reason = null
-  ) {
+  static async sendWithdrawalNotification(userId, amount, status, reason = null) {
     const statusMap = {
       APPROVED: { title: '✅ Withdrawal Approved' },
       REJECTED: { title: '❌ Withdrawal Rejected' },
@@ -521,11 +488,7 @@ class NotificationService {
   // ============================================
   // 19. Subscription Notification Helper
   // ============================================
-  static async sendSubscriptionNotification(
-    userId,
-    plan,
-    status = 'ACTIVATED'
-  ) {
+  static async sendSubscriptionNotification(userId, plan, status = 'ACTIVATED') {
     const titles = {
       ACTIVATED: '👑 Subscription Activated',
       EXPIRING: '⏰ Subscription Expiring Soon',
@@ -567,14 +530,14 @@ class NotificationService {
         <body>
           <div class="container">
             <div class="header">
-              <h1>Vibe</h1>
+              <h1>Bond</h1>
             </div>
             <div class="content">
               <h2>${data.title}</h2>
               <p>${data.body}</p>
             </div>
             <div class="footer">
-              <p>© ${new Date().getFullYear()} Vibe. All rights reserved.</p>
+              <p>© ${new Date().getFullYear()} Bond. All rights reserved.</p>
             </div>
           </div>
         </body>

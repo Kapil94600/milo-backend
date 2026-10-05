@@ -8,65 +8,38 @@ const ApiResponse = require('../utils/response');
 const { logError } = require('../utils/logger');
 const { HTTP_STATUS } = require('../common/constants');
 
-// ============================================
 // Prisma error mapping
-// ============================================
-// ============================================
-// Prisma error mapping
-// ============================================
 const handlePrismaError = (err) => {
-  // P2002: Unique constraint
   if (err.code === 'P2002') {
     const fields = err.meta?.target || [];
     const field = Array.isArray(fields) ? fields.join(', ') : fields;
     return new AppError(`${field} already exists`, HTTP_STATUS.CONFLICT);
   }
-
-  // P2003: Foreign key constraint
   if (err.code === 'P2003') {
     return new AppError('Related record not found', HTTP_STATUS.BAD_REQUEST);
   }
-
-  // P2025: Record not found
   if (err.code === 'P2025') {
     return new AppError('Record not found', HTTP_STATUS.NOT_FOUND);
   }
-
-  // P2014: Required relation violation
   if (err.code === 'P2014') {
     return new AppError('Invalid relation', HTTP_STATUS.BAD_REQUEST);
   }
-
-  // ✅ Prisma validation error — Show actual message
   if (err instanceof Prisma.PrismaClientValidationError) {
     console.error('❌ Prisma Validation Error:', err.message);
     return new AppError('Invalid data format: ' + err.message, HTTP_STATUS.BAD_REQUEST);
   }
-
-  // Initialization error
   if (err instanceof Prisma.PrismaClientInitializationError) {
     return new AppError('Database connection failed', HTTP_STATUS.INTERNAL_SERVER_ERROR);
   }
-
   return null;
 };
-// ============================================
-// Deep sanitize — hides sensitive fields at any depth
-// ============================================
+
+// Deep sanitize
 const SENSITIVE_KEYS = [
-  'password',
-  'otp',
-  'secretKey',
-  'token',
-  'refreshToken',
-  'accessToken',
-  'apiKey',
-  'apiSecret',
-  'privateKey',
-  'webhookSecret',
-  'signature',
-  'razorpay_signature',
-  'authorization',
+  'password', 'otp', 'secretKey', 'token', 'refreshToken',
+  'accessToken', 'apiKey', 'apiSecret', 'privateKey',
+  'webhookSecret', 'signature', 'razorpay_signature', 'authorization',
+  'fcmToken', 'idToken',
 ];
 
 const sanitizeValue = (value, depth = 0) => {
@@ -86,11 +59,8 @@ const sanitizeValue = (value, depth = 0) => {
   return out;
 };
 
-// ============================================
 // Main error handler
-// ============================================
 const errorHandler = (err, req, res, next) => {
-  // Log
   logError(err, {
     path: req.path,
     method: req.method,
@@ -149,16 +119,15 @@ const errorHandler = (err, req, res, next) => {
 
   // 7. Default
   const statusCode = err.statusCode || HTTP_STATUS.INTERNAL_SERVER_ERROR;
-  const message = statusCode === HTTP_STATUS.INTERNAL_SERVER_ERROR
-    ? 'Internal server error'
-    : err.message || 'Something went wrong';
+  const message =
+    statusCode === HTTP_STATUS.INTERNAL_SERVER_ERROR
+      ? 'Internal server error'
+      : err.message || 'Something went wrong';
 
   return ApiResponse.error(res, message, statusCode, err.errors || null);
 };
 
-// ============================================
 // 404 handler
-// ============================================
 const notFoundHandler = (req, res) => {
   return ApiResponse.notFound(res, `Route ${req.method} ${req.path} not found`);
 };

@@ -1,6 +1,5 @@
 // ============================================
-// Prisma Schema - Social Platform Backend
-// Database: PostgreSQL
+// Prisma Schema — Complete with Girl Rates
 // ============================================
 
 generator client {
@@ -15,7 +14,6 @@ datasource db {
 // ============================================
 // ENUMS
 // ============================================
-
 enum Role {
   USER
   GIRL
@@ -47,6 +45,7 @@ enum TransactionType {
   CREDIT
   DEBIT
 }
+
 enum TransactionCategory {
   SIGNUP_BONUS
   REFERRAL_BONUS
@@ -66,6 +65,7 @@ enum TransactionCategory {
   REWARD
   ADMIN_ADD
 }
+
 enum PaymentStatus {
   PENDING
   COMPLETED
@@ -281,85 +281,87 @@ enum AuditStatus {
 }
 
 // ============================================
-// MODELS
+// USERS
 // ============================================
-
-// ---------- USER ----------
 model User {
-  id              String    @id @default(cuid())
-  phone           String    @unique
-  email           String?   @unique
-  name            String
-  username        String?   @unique
-  password        String?
-  role            Role      @default(USER)
-  profileImage    String?
-  coverImage      String?
-  bio             String?   @db.Text
-  birthDate       DateTime?
-  gender          Gender    @default(PREFER_NOT_TO_SAY)
-  address         String?
-  city            String?
-  country         String?
-  latitude        Float?
-  longitude       Float?
-  isActive        Boolean   @default(true)
-  isVerified      Boolean   @default(false)
-  isOnline        Boolean   @default(false)
-  lastSeen        DateTime  @default(now())
-  lastLogin       DateTime?
-  refreshToken    String?   @db.Text
-  referralCode    String?   @unique
-  status          Status    @default(ACTIVE)
-  fcmToken        String?   @db.Text
-  language        String    @default("en")
-  darkMode        Boolean   @default(false)
+  id           String    @id @default(cuid())
+  phone        String    @unique
+  email        String?   @unique
+  name         String
+  username     String?   @unique
+  password     String?
+  role         Role      @default(USER)
+  profileImage String?
+  coverImage   String?
+  bio          String?
+  birthDate    DateTime?
+  gender       Gender    @default(PREFER_NOT_TO_SAY)
+  address      String?
+  city         String?
+  country      String?
+  latitude     Float?
+  longitude    Float?
+  isActive     Boolean   @default(true)
+  isVerified   Boolean   @default(false)
+  isOnline     Boolean   @default(false)
+  lastSeen     DateTime  @default(now())
+  lastLogin    DateTime?
+  refreshToken String?
+  referralCode String?   @unique
+  status       Status    @default(ACTIVE)
+  fcmToken     String?
+  language     String    @default("en")
+  darkMode     Boolean   @default(false)
 
-  // Stats
-  totalCoins      Int       @default(0)
-  totalEarnings   Float     @default(0)
-  totalSpent      Float     @default(0)
-  totalCalls      Int       @default(0)
-  totalMessages   Int       @default(0)
-  totalVoiceMins  Int       @default(0)
-  totalVideoMins  Int       @default(0)
-  totalReferrals  Int       @default(0)
+  totalCoins     Int   @default(0)
+  totalEarnings  Float @default(0)
+  totalSpent     Float @default(0)
+  totalCalls     Int   @default(0)
+  totalMessages  Int   @default(0)
+  totalVoiceMins Int   @default(0)
+  totalVideoMins Int   @default(0)
+  totalReferrals Int   @default(0)
 
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
-  deletedAt       DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
 
   // Relations
-  girl            Girl?
-  admin           Admin?
-  wallet          Wallet?
-  sentMessages    Message[] @relation("SentMessages")
-  chats           ChatParticipant[]
-  callsMade       Call[]    @relation("CallerCalls")
-  callsReceived   Call[]    @relation("ReceiverCalls")
-  transactions    Transaction[]
-  sentGifts       GiftTransaction[] @relation("GiftSender")
-  receivedGifts   GiftTransaction[] @relation("GiftReceiver")
-  notifications   Notification[]
-  reportsMade     Report[]  @relation("Reporter")
-  reportsAgainst  Report[]  @relation("Reported")
-  blockedUsers    BlockedUser[] @relation("Blocker")
-  blockedBy       BlockedUser[] @relation("Blocked")
-  favorites       Favorite[] @relation("Favoriter")
-  favoritedBy     Favorite[] @relation("Favorited")
-  referralsMade   Referral[] @relation("Referrer")
-  referredBy      Referral?  @relation("Referred")
-  subscriptions   Subscription[]
-  supportTickets  SupportTicket[]
-  reviewsGiven    Review[]   @relation("Reviewer")
-  reviewsReceived Review[]   @relation("Reviewed")
-  promoUsages     PromoUsage[]
-  authLogs        AuthLog[]
-  auditLogs       AuditLog[]
-  withdrawals     Withdrawal[]
-  devices         Device[]
-   girlRequest         GirlRequest?  @relation("GirlRequestUser")
-  reviewedRequests    GirlRequest[] @relation("GirlRequestReviewer")
+  girl                 Girl?
+  girlRequest          GirlRequest?
+  admin                Admin?
+  wallet               Wallet?
+  devices              Device[]
+  transactions         Transaction[]
+  withdrawals          Withdrawal[]
+  subscriptions        Subscription[]
+  promoUsages          PromoUsage[]
+  referralsMade        Referral[]        @relation("Referrer")
+  referralRecv         Referral?         @relation("Referred")
+  sentMessages         Message[]         @relation("MessageSender")
+  messagesReact        MessageReaction[]
+  chatParticipants     ChatParticipant[]
+  callsMade            Call[]            @relation("Caller")
+  callsReceived        Call[]            @relation("Receiver")
+  giftsSent            GiftTransaction[] @relation("GiftSender")
+  giftsReceived        GiftTransaction[] @relation("GiftReceiver")
+  notifications        Notification[]
+  reportsMade          Report[]          @relation("Reporter")
+  reportsReceived      Report[]          @relation("Reported")
+  reviewsGiven         Review[]          @relation("Reviewer")
+  reviewsGot           Review[]          @relation("Reviewed")
+  blockedUsers         BlockedUser[]     @relation("Blocker")
+  blockedBy            BlockedUser[]     @relation("Blocked")
+  favorites            Favorite[]        @relation("Favoriter")
+  favoritedBy          Favorite[]        @relation("Favorited")
+  tickets              SupportTicket[]
+  ticketMessages       SupportMessage[]
+  auditLogs            AuditLog[]
+  authLogs             AuthLog[]
+  girlRequestsReviewed GirlRequest[]     @relation("GirlRequestReviewed")
+  reportsAssigned      Report[]          @relation("AssignedTo")
+  reportsReviewed      Report[]          @relation("ReportReviewed")
+  ticketsAssigned      SupportTicket[]   @relation("TicketAssigned")
 
   @@index([phone])
   @@index([email])
@@ -368,97 +370,114 @@ model User {
   @@index([city])
   @@map("users")
 }
+
 // ============================================
-// GIRL REQUESTS — Onboarding Applications
+// GIRLS
+// ============================================
+model Girl {
+  id     String @id @default(cuid())
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  isOnline    Boolean @default(false)
+  isAvailable Boolean @default(true)
+  acceptChat  Boolean @default(true)
+  acceptCalls Boolean @default(true)
+
+  isVerified         Boolean            @default(false)
+  isFeatured         Boolean            @default(false)
+  idProofUrl         String?
+  selfieUrl          String?
+  verificationStatus VerificationStatus @default(PENDING)
+
+  categories  String[]
+  languages   String[]
+  specialties String[]
+  about       String?
+
+  // ⭐ RATES
+  hourlyRate      Float @default(100)
+  videoCallRate   Float @default(200)
+  chatMessageRate Float @default(1)
+
+  rateApproved      Boolean @default(true)
+  pendingHourlyRate Float?
+  pendingVideoRate  Float?
+  pendingChatRate   Float?
+
+  instagramUrl String?
+  youtubeUrl   String?
+  twitterUrl   String?
+
+  rating            Float @default(0)
+  totalReviews      Int   @default(0)
+  totalCalls        Int   @default(0)
+  totalVoiceMins    Int   @default(0)
+  totalVideoMins    Int   @default(0)
+  totalMessages     Int   @default(0)
+  totalCoinsEarned  Int   @default(0)
+  earningsTotal     Float @default(0)
+  earningsToday     Float @default(0)
+  earningsThisWeek  Float @default(0)
+  earningsThisMonth Float @default(0)
+
+  status    Status    @default(ACTIVE)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  @@index([userId])
+  @@index([isOnline, isAvailable])
+  @@index([rating])
+  @@index([status])
+  @@index([hourlyRate])
+  @@index([videoCallRate])
+  @@index([rateApproved])
+  @@map("girls")
+}
+
+// ============================================
+// GIRL REQUESTS
 // ============================================
 model GirlRequest {
-  id              String    @id @default(cuid())
-  userId          String    @unique
-  about           String    @db.Text
-  categories      String[]
-  languages       String[]
-  specialties     String[]
-  hourlyRate      Float     @default(100)
-  status          String    @default("PENDING") @db.VarChar(20)
-  rejectionReason String?   @db.Text
-  reviewedById    String?
-  reviewedAt      DateTime?
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
-  deletedAt       DateTime?
+  id     String @id @default(cuid())
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  user User @relation("GirlRequestUser", fields: [userId], references: [id], onDelete: Cascade)
-  reviewedBy User? @relation("GirlRequestReviewer", fields: [reviewedById], references: [id], onDelete: SetNull)
+  about       String
+  categories  String[]
+  languages   String[]
+  specialties String[]
+
+  hourlyRate      Float @default(100)
+  videoCallRate   Float @default(200)
+  chatMessageRate Float @default(1)
+
+  status          String    @default("PENDING")
+  rejectionReason String?
+  reviewedById    String?
+  reviewedBy      User?     @relation("GirlRequestReviewed", fields: [reviewedById], references: [id], onDelete: SetNull)
+  reviewedAt      DateTime?
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
 
   @@index([userId])
   @@index([status])
   @@index([createdAt])
   @@map("girl_requests")
 }
-// ---------- GIRL PROFILE ----------
-model Girl {
-  id                    String    @id @default(cuid())
-  userId                String    @unique
-  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  isOnline              Boolean   @default(false)
-  isAvailable           Boolean   @default(true)
-  acceptChat            Boolean   @default(true)
-  acceptCalls           Boolean   @default(true)
-  isVerified            Boolean   @default(false)
-  isFeatured            Boolean   @default(false)
 
-  // Verification
-  idProofUrl            String?
-  selfieUrl             String?
-  verificationStatus    VerificationStatus @default(PENDING)
-
-  // Profile
-  categories            String[]
-  languages             String[]
-  specialties           String[]
-  about                 String?   @db.Text
-  hourlyRate            Float     @default(0)
-
-  // Social
-  instagramUrl          String?
-  youtubeUrl            String?
-  twitterUrl            String?
-
-  // Stats
-  rating                Float     @default(0)
-  totalReviews          Int       @default(0)
-  totalCalls            Int       @default(0)
-  totalVoiceMins        Int       @default(0)
-  totalVideoMins        Int       @default(0)
-  totalMessages         Int       @default(0)
-  totalCoinsEarned      Int       @default(0)
-
-  // Earnings
-  earningsTotal         Float     @default(0)
-  earningsToday         Float     @default(0)
-  earningsThisWeek      Float     @default(0)
-  earningsThisMonth     Float     @default(0)
-
-  status                Status    @default(ACTIVE)
-  createdAt             DateTime  @default(now())
-  updatedAt             DateTime  @updatedAt
-  deletedAt             DateTime?
-
-  @@index([userId])
-  @@index([isOnline, isAvailable])
-  @@index([rating])
-  @@index([status])
-  @@map("girls")
-}
-
-// ---------- ADMIN ----------
+// ============================================
+// ADMINS
+// ============================================
 model Admin {
-  id             String    @id @default(cuid())
-  userId         String    @unique
-  user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  role           String    @default("ADMIN")  // SUPER_ADMIN, ADMIN, MODERATOR
+  id     String @id @default(cuid())
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role   String @default("ADMIN")
 
-  // Permissions
   canManageUsers         Boolean @default(true)
   canManageGirls         Boolean @default(true)
   canManageCoins         Boolean @default(true)
@@ -470,13 +489,13 @@ model Admin {
   canViewAnalytics       Boolean @default(true)
   canManageAdmins        Boolean @default(false)
 
-  lastActive     DateTime  @default(now())
-  status         Status    @default(ACTIVE)
-  createdAt      DateTime  @default(now())
-  updatedAt      DateTime  @updatedAt
-  deletedAt      DateTime?
+  lastActive DateTime  @default(now())
+  status     Status    @default(ACTIVE)
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  deletedAt  DateTime?
 
-  loginHistory   AdminLoginHistory[]
+  loginHistory AdminLoginHistory[]
 
   @@index([userId])
   @@index([role])
@@ -484,75 +503,83 @@ model Admin {
 }
 
 model AdminLoginHistory {
-  id         String   @id @default(cuid())
-  adminId    String
-  admin      Admin    @relation(fields: [adminId], references: [id], onDelete: Cascade)
-  ip         String?
-  userAgent  String?  @db.Text
-  createdAt  DateTime @default(now())
+  id        String   @id @default(cuid())
+  adminId   String
+  admin     Admin    @relation(fields: [adminId], references: [id], onDelete: Cascade)
+  ip        String?
+  userAgent String?
+  createdAt DateTime @default(now())
 
   @@index([adminId, createdAt])
   @@map("admin_login_history")
 }
 
-// ---------- DEVICE ----------
+// ============================================
+// DEVICES
+// ============================================
 model Device {
-  id         String   @id @default(cuid())
-  userId     String
-  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  token      String   @unique @db.Text
-  platform   String?  // ios, android, web
-  deviceId   String?
-  model      String?
-  version    String?
-  isActive   Boolean  @default(true)
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  token     String   @unique
+  platform  String?
+  deviceId  String?
+  model     String?
+  version   String?
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@index([userId])
   @@map("devices")
 }
 
-// ---------- OTP ----------
+// ============================================
+// OTPS
+// ============================================
 model Otp {
-  id         String   @id @default(cuid())
-  phone      String
-  otp        String
-  purpose    String   @default("LOGIN")
-  attempts   Int      @default(0)
-  isUsed     Boolean  @default(false)
-  expiresAt  DateTime
-  ip         String?
-  userAgent  String?  @db.Text
-  createdAt  DateTime @default(now())
+  id        String   @id @default(cuid())
+  phone     String
+  otp       String
+  purpose   String   @default("LOGIN")
+  attempts  Int      @default(0)
+  isUsed    Boolean  @default(false)
+  expiresAt DateTime
+  ip        String?
+  userAgent String?
+  createdAt DateTime @default(now())
 
   @@index([phone, isUsed])
   @@index([expiresAt])
   @@map("otps")
 }
 
-// ---------- WALLET ----------
+// ============================================
+// WALLETS
+// ============================================
 model Wallet {
-  id                String    @id @default(cuid())
-  userId            String    @unique
-  user              User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  balance           Float     @default(0)
-  coins             Int       @default(0)
-  totalEarned       Float     @default(0)
-  totalSpent        Float     @default(0)
-  totalWithdrawn    Float     @default(0)
-  pendingBalance    Float     @default(0)
-  currency          String    @default("INR")
-  isActive          Boolean   @default(true)
-  createdAt         DateTime  @default(now())
-  updatedAt         DateTime  @updatedAt
-  deletedAt         DateTime?
+  id             String    @id @default(cuid())
+  userId         String    @unique
+  user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  balance        Float     @default(0)
+  coins          Int       @default(0)
+  totalEarned    Float     @default(0)
+  totalSpent     Float     @default(0)
+  totalWithdrawn Float     @default(0)
+  pendingBalance Float     @default(0)
+  currency       String    @default("INR")
+  isActive       Boolean   @default(true)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  deletedAt      DateTime?
 
   @@index([userId])
   @@map("wallets")
 }
 
-// ---------- TRANSACTION ----------
+// ============================================
+// TRANSACTIONS
+// ============================================
 model Transaction {
   id              String              @id @default(cuid())
   userId          String
@@ -561,7 +588,7 @@ model Transaction {
   category        TransactionCategory
   amount          Float               @default(0)
   coins           Int                 @default(0)
-  description     String              @db.Text
+  description     String
   status          PaymentStatus       @default(COMPLETED)
   balanceAfter    Float?
   coinsAfter      Int?
@@ -569,9 +596,9 @@ model Transaction {
   referenceModel  String?
   idempotencyKey  String?             @unique
   gatewayResponse Json?
-  failureReason   String?             @db.Text
+  failureReason   String?
   ip              String?
-  userAgent       String?             @db.Text
+  userAgent       String?
   createdAt       DateTime            @default(now())
   updatedAt       DateTime            @updatedAt
   deletedAt       DateTime?
@@ -582,40 +609,44 @@ model Transaction {
   @@map("transactions")
 }
 
-// ---------- WITHDRAWAL ----------
+// ============================================
+// WITHDRAWALS
+// ============================================
 model Withdrawal {
-  id             String          @id @default(cuid())
-  userId         String
-  user           User            @relation(fields: [userId], references: [id], onDelete: Cascade)
-  amount         Float
-  fee            Float           @default(0)
-  netAmount      Float
-  status         WithdrawStatus  @default(PENDING)
-  method         String          // BANK, UPI, PAYPAL
-  accountName    String?
-  accountNumber  String?
-  ifscCode       String?
-  upiId          String?
-  bankName       String?
-  processedBy    String?
-  processedAt    DateTime?
-  failureReason  String?         @db.Text
+  id              String         @id @default(cuid())
+  userId          String
+  user            User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  amount          Float
+  fee             Float          @default(0)
+  netAmount       Float
+  status          WithdrawStatus @default(PENDING)
+  method          String
+  accountName     String?
+  accountNumber   String?
+  ifscCode        String?
+  upiId           String?
+  bankName        String?
+  processedBy     String?
+  processedAt     DateTime?
+  failureReason   String?
   gatewayResponse Json?
-  requestedAt    DateTime        @default(now())
-  createdAt      DateTime        @default(now())
-  updatedAt      DateTime        @updatedAt
+  requestedAt     DateTime       @default(now())
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
 
   @@index([userId, status])
   @@index([status, createdAt])
   @@map("withdrawals")
 }
 
-// ---------- COIN PACKAGE ----------
+// ============================================
+// COIN PACKAGES
+// ============================================
 model CoinPackage {
   id          String    @id @default(cuid())
   name        String
-  description String?   @db.Text
-  image       String?   // ✅ YE LINE ADD KARO
+  description String?
+  image       String?
   coins       Int
   bonusCoins  Int       @default(0)
   price       Float
@@ -631,33 +662,33 @@ model CoinPackage {
   @@index([isActive])
   @@map("coin_packages")
 }
-// ---------- SUBSCRIPTION ----------
+
 // ============================================
 // SUBSCRIPTION PLANS
 // ============================================
 model SubscriptionPlan {
-  id                  String               @id @default(cuid())
-  name                String
-  description         String?              @db.Text
-  image               String?              // ✅ NEW
-  price               Float
-  currency            String               @default("INR")
-  duration            SubscriptionDuration
-  durationDays        Int
-  features            String[]
-  freeMessages        Int                  @default(0)
-  freeVoiceMinutes    Int                  @default(0)
-  freeVideoMinutes    Int                  @default(0)
-  bonusCoins          Int                  @default(0)
-  discountPercent     Float                @default(0)
-  prioritySupport     Boolean              @default(false)
-  adFree              Boolean              @default(false)
-  isPopular           Boolean              @default(false)
-  isActive            Boolean              @default(true)
-  order               Int                  @default(0)
-  createdAt           DateTime             @default(now())
-  updatedAt           DateTime             @updatedAt
-  deletedAt           DateTime?
+  id               String               @id @default(cuid())
+  name             String
+  description      String?
+  image            String?
+  price            Float
+  currency         String               @default("INR")
+  duration         SubscriptionDuration
+  durationDays     Int
+  features         String[]
+  freeMessages     Int                  @default(0)
+  freeVoiceMinutes Int                  @default(0)
+  freeVideoMinutes Int                  @default(0)
+  bonusCoins       Int                  @default(0)
+  discountPercent  Float                @default(0)
+  prioritySupport  Boolean              @default(false)
+  adFree           Boolean              @default(false)
+  isPopular        Boolean              @default(false)
+  isActive         Boolean              @default(true)
+  order            Int                  @default(0)
+  createdAt        DateTime             @default(now())
+  updatedAt        DateTime             @updatedAt
+  deletedAt        DateTime?
 
   subscriptions Subscription[]
 
@@ -665,57 +696,59 @@ model SubscriptionPlan {
   @@map("subscription_plans")
 }
 
+// ============================================
+// SUBSCRIPTIONS
+// ============================================
 model Subscription {
-  id             String              @id @default(cuid())
-  userId         String
-  user           User                @relation(fields: [userId], references: [id], onDelete: Cascade)
-  planId         String
-  plan           SubscriptionPlan    @relation(fields: [planId], references: [id])
-  startDate      DateTime            @default(now())
-  endDate        DateTime
-  isActive       Boolean             @default(true)
-  autoRenew      Boolean             @default(false)
-  paymentStatus  PaymentStatus       @default(PENDING)
-  paymentId      String?
-  amount         Float
-  currency       String              @default("INR")
-  features       Json?
-  usage          Json?
-  cancelledAt    DateTime?
-  createdAt      DateTime            @default(now())
-  updatedAt      DateTime            @updatedAt
-  deletedAt      DateTime?
+  id            String           @id @default(cuid())
+  userId        String
+  user          User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  planId        String
+  plan          SubscriptionPlan @relation(fields: [planId], references: [id], onDelete: Restrict)
+  startDate     DateTime         @default(now())
+  endDate       DateTime
+  isActive      Boolean          @default(true)
+  autoRenew     Boolean          @default(false)
+  paymentStatus PaymentStatus    @default(PENDING)
+  paymentId     String?
+  amount        Float
+  currency      String           @default("INR")
+  features      Json?
+  usage         Json?
+  cancelledAt   DateTime?
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+  deletedAt     DateTime?
 
   @@index([userId, isActive])
   @@index([endDate])
   @@map("subscriptions")
 }
 
-// ---------- PROMO ----------
 // ============================================
 // PROMO CODES
 // ============================================
 model PromoCode {
-  id                  String    @id @default(cuid())
-  code                String    @unique
-  description         String    @db.Text
-  image               String?   // ✅ NEW
-  type                PromoType
-  value               Float
-  maxDiscount         Float?
-  minOrderAmount      Float     @default(0)
-  maxUses             Int       @default(0)
-  usedCount           Int       @default(0)
-  perUserLimit        Int       @default(1)
-  startDate           DateTime  @default(now())
-  endDate             DateTime?
-  isActive            Boolean   @default(true)
-  applicableRoles     String[]
-  applicableProducts  String[]
-  createdBy           String?
-  createdAt           DateTime  @default(now())
-  updatedAt           DateTime  @updatedAt
-  deletedAt           DateTime?
+  id                 String    @id @default(cuid())
+  code               String    @unique
+  description        String
+  image              String?
+  type               PromoType
+  value              Float
+  maxDiscount        Float?
+  minOrderAmount     Float     @default(0)
+  maxUses            Int       @default(0)
+  usedCount          Int       @default(0)
+  perUserLimit       Int       @default(1)
+  startDate          DateTime  @default(now())
+  endDate            DateTime?
+  isActive           Boolean   @default(true)
+  applicableRoles    String[]
+  applicableProducts String[]
+  createdBy          String?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+  deletedAt          DateTime?
 
   usages PromoUsage[]
 
@@ -724,79 +757,83 @@ model PromoCode {
 }
 
 model PromoUsage {
-  id         String    @id @default(cuid())
-  promoId    String
-  promo      PromoCode @relation(fields: [promoId], references: [id], onDelete: Cascade)
-  userId     String
-  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  discount   Float
-  orderId    String?
-  usedAt     DateTime  @default(now())
+  id       String    @id @default(cuid())
+  promoId  String
+  promo    PromoCode @relation(fields: [promoId], references: [id], onDelete: Cascade)
+  userId   String
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  discount Float
+  orderId  String?
+  usedAt   DateTime  @default(now())
 
   @@index([userId, promoId])
   @@map("promo_usages")
 }
 
-// ---------- REFERRAL ----------
+// ============================================
+// REFERRALS
+// ============================================
 model Referral {
-  id              String          @id @default(cuid())
-  referrerId      String
-  referrer        User            @relation("Referrer", fields: [referrerId], references: [id], onDelete: Cascade)
-  referredId      String          @unique
-  referred        User            @relation("Referred", fields: [referredId], references: [id], onDelete: Cascade)
-  referralCode    String
-  status          ReferralStatus  @default(PENDING)
-  reward          Float           @default(0)
-  coinsRewarded   Int             @default(0)
-  moneyRewarded   Float           @default(0)
-  completedAt     DateTime?
-  rewardedAt      DateTime?
-  conditionsMet   Boolean         @default(false)
-  referrerIp      String?
-  referredIp      String?
-  createdAt       DateTime        @default(now())
-  updatedAt       DateTime        @updatedAt
-  deletedAt       DateTime?
+  id            String         @id @default(cuid())
+  referrerId    String
+  referrer      User           @relation("Referrer", fields: [referrerId], references: [id], onDelete: Cascade)
+  referredId    String         @unique
+  referred      User           @relation("Referred", fields: [referredId], references: [id], onDelete: Cascade)
+  referralCode  String
+  status        ReferralStatus @default(PENDING)
+  reward        Float          @default(0)
+  coinsRewarded Int            @default(0)
+  moneyRewarded Float          @default(0)
+  completedAt   DateTime?
+  rewardedAt    DateTime?
+  conditionsMet Boolean        @default(false)
+  referrerIp    String?
+  referredIp    String?
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  deletedAt     DateTime?
 
   @@index([referrerId])
   @@index([status])
   @@map("referrals")
 }
 
-// ---------- CHAT ----------
+// ============================================
+// CHATS
+// ============================================
 model Chat {
-  id              String            @id @default(cuid())
-  type            ChatType          @default(DIRECT)
-  name            String?
-  image           String?
-  description     String?           @db.Text
-  groupAdminId    String?
-  lastMessageId   String?
-  lastMessageAt   DateTime          @default(now())
-  isActive        Boolean           @default(true)
-  createdAt       DateTime          @default(now())
-  updatedAt       DateTime          @updatedAt
-  deletedAt       DateTime?
+  id            String    @id @default(cuid())
+  type          ChatType  @default(DIRECT)
+  name          String?
+  image         String?
+  description   String?
+  groupAdminId  String?
+  lastMessageId String?
+  lastMessageAt DateTime  @default(now())
+  isActive      Boolean   @default(true)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  deletedAt     DateTime?
 
-  participants    ChatParticipant[]
-  messages        Message[]
+  participants ChatParticipant[]
+  messages     Message[]
 
   @@index([lastMessageAt])
   @@map("chats")
 }
 
 model ChatParticipant {
-  id            String   @id @default(cuid())
-  chatId        String
-  chat          Chat     @relation(fields: [chatId], references: [id], onDelete: Cascade)
-  userId        String
-  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  isAdmin       Boolean  @default(false)
-  unreadCount   Int      @default(0)
-  isMuted       Boolean  @default(false)
-  isArchived    Boolean  @default(false)
-  lastReadAt    DateTime?
-  joinedAt      DateTime @default(now())
+  id          String    @id @default(cuid())
+  chatId      String
+  chat        Chat      @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  isAdmin     Boolean   @default(false)
+  unreadCount Int       @default(0)
+  isMuted     Boolean   @default(false)
+  isArchived  Boolean   @default(false)
+  lastReadAt  DateTime?
+  joinedAt    DateTime  @default(now())
 
   @@unique([chatId, userId])
   @@index([userId])
@@ -804,29 +841,29 @@ model ChatParticipant {
 }
 
 model Message {
-  id              String        @id @default(cuid())
+  id              String      @id @default(cuid())
   chatId          String
-  chat            Chat          @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  chat            Chat        @relation(fields: [chatId], references: [id], onDelete: Cascade)
   senderId        String
-  sender          User          @relation("SentMessages", fields: [senderId], references: [id], onDelete: Cascade)
-  content         String        @db.Text
-  type            MessageType   @default(TEXT)
+  sender          User        @relation("MessageSender", fields: [senderId], references: [id], onDelete: Cascade)
+  content         String
+  type            MessageType @default(TEXT)
   mediaUrl        String?
   replyToId       String?
-  isDelivered     Boolean       @default(false)
+  isDelivered     Boolean     @default(false)
   deliveredAt     DateTime?
-  isRead          Boolean       @default(false)
+  isRead          Boolean     @default(false)
   readAt          DateTime?
-  isEdited        Boolean       @default(false)
+  isEdited        Boolean     @default(false)
   editedAt        DateTime?
-  isDeletedForAll Boolean       @default(false)
+  isDeletedForAll Boolean     @default(false)
   deletedFor      String[]
   clientMessageId String?
-  createdAt       DateTime      @default(now())
-  updatedAt       DateTime      @updatedAt
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
   deletedAt       DateTime?
 
-  reactions       MessageReaction[]
+  reactions MessageReaction[]
 
   @@index([chatId, createdAt])
   @@index([senderId])
@@ -834,40 +871,43 @@ model Message {
 }
 
 model MessageReaction {
-  id         String   @id @default(cuid())
-  messageId  String
-  message    Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
-  userId     String
-  reaction   String   @default("👍")
-  createdAt  DateTime @default(now())
+  id        String   @id @default(cuid())
+  messageId String
+  message   Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  reaction  String   @default("👍")
+  createdAt DateTime @default(now())
 
   @@unique([messageId, userId])
   @@map("message_reactions")
 }
 
-// ---------- CALL ----------
+// ============================================
+// CALLS
+// ============================================
 model Call {
-  id             String       @id @default(cuid())
-  callerId       String
-  caller         User         @relation("CallerCalls", fields: [callerId], references: [id], onDelete: Cascade)
-  receiverId     String
-  receiver       User         @relation("ReceiverCalls", fields: [receiverId], references: [id], onDelete: Cascade)
-  type           CallType
-  status         CallStatus   @default(INITIATED)
-  quality        CallQuality  @default(MEDIUM)
-  startedAt      DateTime     @default(now())
-  endedAt        DateTime?
-  duration       Int          @default(0)
-  cost           Float        @default(0)
-  coinRate       Int          @default(0)
-  paymentStatus  PaymentStatus @default(PENDING)
-  recordingUrl   String?
-  recordingSize  Int?
-  endedById      String?
-  metadata       Json?
-  createdAt      DateTime     @default(now())
-  updatedAt      DateTime     @updatedAt
-  deletedAt      DateTime?
+  id            String        @id @default(cuid())
+  callerId      String
+  caller        User          @relation("Caller", fields: [callerId], references: [id], onDelete: Cascade)
+  receiverId    String
+  receiver      User          @relation("Receiver", fields: [receiverId], references: [id], onDelete: Cascade)
+  type          CallType
+  status        CallStatus    @default(INITIATED)
+  quality       CallQuality   @default(MEDIUM)
+  startedAt     DateTime      @default(now())
+  endedAt       DateTime?
+  duration      Int           @default(0)
+  cost          Float         @default(0)
+  coinRate      Int           @default(0)
+  paymentStatus PaymentStatus @default(PENDING)
+  recordingUrl  String?
+  recordingSize Int?
+  endedById     String?
+  metadata      Json?
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+  deletedAt     DateTime?
 
   @@index([callerId, createdAt])
   @@index([receiverId, createdAt])
@@ -875,61 +915,65 @@ model Call {
   @@map("calls")
 }
 
-// ---------- GIFT ----------
+// ============================================
+// GIFTS
+// ============================================
 model Gift {
-  id             String        @id @default(cuid())
-  name           String
-  description    String?
-  image          String
-  thumbnail      String?
-  animationUrl   String?
-  soundUrl       String?
-  coins          Int
-  price          Float
-  category       GiftCategory  @default(OTHER)
-  rarity         GiftRarity    @default(COMMON)
-  isActive       Boolean       @default(true)
-  isFeatured     Boolean       @default(false)
-  displayOrder   Int           @default(0)
-  totalSent      Int           @default(0)
-  createdBy      String?
-  createdAt      DateTime      @default(now())
-  updatedAt      DateTime      @updatedAt
-  deletedAt      DateTime?
+  id           String       @id @default(cuid())
+  name         String
+  description  String?
+  image        String
+  thumbnail    String?
+  animationUrl String?
+  soundUrl     String?
+  coins        Int
+  price        Float
+  category     GiftCategory @default(OTHER)
+  rarity       GiftRarity   @default(COMMON)
+  isActive     Boolean      @default(true)
+  isFeatured   Boolean      @default(false)
+  displayOrder Int          @default(0)
+  totalSent    Int          @default(0)
+  createdBy    String?
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+  deletedAt    DateTime?
 
-  transactions   GiftTransaction[]
+  transactions GiftTransaction[]
 
   @@index([isActive])
   @@map("gifts")
 }
 
 model GiftTransaction {
-  id             String        @id @default(cuid())
-  giftId         String
-  gift           Gift          @relation(fields: [giftId], references: [id])
-  senderId       String
-  sender         User          @relation("GiftSender", fields: [senderId], references: [id], onDelete: Cascade)
-  receiverId     String
-  receiver       User          @relation("GiftReceiver", fields: [receiverId], references: [id], onDelete: Cascade)
-  chatId         String?
-  coins          Int
-  price          Float
-  receiverCoins  Int           @default(0)
-  message        String?
-  isAnonymous    Boolean       @default(false)
-  isRead         Boolean       @default(false)
-  readAt         DateTime?
-  status         PaymentStatus @default(COMPLETED)
-  createdAt      DateTime      @default(now())
-  updatedAt      DateTime      @updatedAt
-  deletedAt      DateTime?
+  id            String        @id @default(cuid())
+  giftId        String
+  gift          Gift          @relation(fields: [giftId], references: [id], onDelete: Restrict)
+  senderId      String
+  sender        User          @relation("GiftSender", fields: [senderId], references: [id], onDelete: Cascade)
+  receiverId    String
+  receiver      User          @relation("GiftReceiver", fields: [receiverId], references: [id], onDelete: Cascade)
+  chatId        String?
+  coins         Int
+  price         Float
+  receiverCoins Int           @default(0)
+  message       String?
+  isAnonymous   Boolean       @default(false)
+  isRead        Boolean       @default(false)
+  readAt        DateTime?
+  status        PaymentStatus @default(COMPLETED)
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+  deletedAt     DateTime?
 
   @@index([senderId, createdAt])
   @@index([receiverId, createdAt])
   @@map("gift_transactions")
 }
 
-// ---------- NOTIFICATION ----------
+// ============================================
+// NOTIFICATIONS
+// ============================================
 model Notification {
   id           String               @id @default(cuid())
   userId       String
@@ -937,7 +981,7 @@ model Notification {
   senderId     String?
   type         NotificationType
   title        String
-  body         String               @db.Text
+  body         String
   image        String?
   data         Json?
   action       String?
@@ -959,30 +1003,34 @@ model Notification {
   @@map("notifications")
 }
 
-// ---------- REPORT ----------
+// ============================================
+// REPORTS
+// ============================================
 model Report {
-  id              String          @id @default(cuid())
-  reporterId      String
-  reporter        User            @relation("Reporter", fields: [reporterId], references: [id], onDelete: Cascade)
-  reportedId      String
-  reported        User            @relation("Reported", fields: [reportedId], references: [id], onDelete: Cascade)
-  type            ReportType
-  category        String
-  description     String          @db.Text
-  evidence        String[]
-  status          ReportStatus    @default(PENDING)
-  priority        ReportPriority  @default(MEDIUM)
-  assignedToId    String?
-  reviewedById    String?
-  reviewedAt      DateTime?
-  resolution      String?         @db.Text
+  id               String         @id @default(cuid())
+  reporterId       String
+  reporter         User           @relation("Reporter", fields: [reporterId], references: [id], onDelete: Cascade)
+  reportedId       String
+  reported         User           @relation("Reported", fields: [reportedId], references: [id], onDelete: Cascade)
+  type             ReportType
+  category         String
+  description      String
+  evidence         String[]
+  status           ReportStatus   @default(PENDING)
+  priority         ReportPriority @default(MEDIUM)
+  assignedToId     String?
+  assignedTo       User?          @relation("AssignedTo", fields: [assignedToId], references: [id], onDelete: SetNull)
+  reviewedById     String?
+  reviewedBy       User?          @relation("ReportReviewed", fields: [reviewedById], references: [id], onDelete: SetNull)
+  reviewedAt       DateTime?
+  resolution       String?
   resolutionAction ReportAction?
-  adminNotes      String?         @db.Text
-  ipAddress       String?
-  userAgent       String?         @db.Text
-  createdAt       DateTime        @default(now())
-  updatedAt       DateTime        @updatedAt
-  deletedAt       DateTime?
+  adminNotes       String?
+  ipAddress        String?
+  userAgent        String?
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+  deletedAt        DateTime?
 
   @@index([reporterId])
   @@index([reportedId])
@@ -990,7 +1038,9 @@ model Report {
   @@map("reports")
 }
 
-// ---------- BLOCKED ----------
+// ============================================
+// BLOCKED USERS
+// ============================================
 model BlockedUser {
   id          String    @id @default(cuid())
   userId      String
@@ -1008,23 +1058,27 @@ model BlockedUser {
   @@map("blocked_users")
 }
 
-// ---------- FAVORITE ----------
+// ============================================
+// FAVORITES
+// ============================================
 model Favorite {
-  id          String    @id @default(cuid())
-  userId      String
-  user        User      @relation("Favoriter", fields: [userId], references: [id], onDelete: Cascade)
-  favoriteId  String
-  favorite    User      @relation("Favorited", fields: [favoriteId], references: [id], onDelete: Cascade)
-  notes       String?
-  createdAt   DateTime  @default(now())
-  deletedAt   DateTime?
+  id         String    @id @default(cuid())
+  userId     String
+  user       User      @relation("Favoriter", fields: [userId], references: [id], onDelete: Cascade)
+  favoriteId String
+  favorite   User      @relation("Favorited", fields: [favoriteId], references: [id], onDelete: Cascade)
+  notes      String?
+  createdAt  DateTime  @default(now())
+  deletedAt  DateTime?
 
   @@unique([userId, favoriteId])
   @@index([userId])
   @@map("favorites")
 }
 
-// ---------- REVIEW ----------
+// ============================================
+// REVIEWS
+// ============================================
 model Review {
   id          String    @id @default(cuid())
   reviewerId  String
@@ -1032,7 +1086,7 @@ model Review {
   reviewedId  String
   reviewed    User      @relation("Reviewed", fields: [reviewedId], references: [id], onDelete: Cascade)
   rating      Int
-  comment     String?   @db.Text
+  comment     String?
   callId      String?
   isAnonymous Boolean   @default(false)
   isVisible   Boolean   @default(true)
@@ -1044,29 +1098,32 @@ model Review {
   @@map("reviews")
 }
 
-// ---------- SUPPORT TICKET ----------
+// ============================================
+// SUPPORT TICKETS
+// ============================================
 model SupportTicket {
-  id             String          @id @default(cuid())
-  userId         String
-  user           User            @relation(fields: [userId], references: [id], onDelete: Cascade)
-  ticketNumber   String          @unique
-  subject        String
-  category       SupportCategory
-  priority       SupportPriority @default(MEDIUM)
-  status         SupportStatus   @default(OPEN)
-  description    String          @db.Text
-  attachments    String[]
-  assignedToId   String?
-  resolvedAt     DateTime?
-  closedAt       DateTime?
-  resolution     String?         @db.Text
-  rating         Int?
-  feedback       String?         @db.Text
-  createdAt      DateTime        @default(now())
-  updatedAt      DateTime        @updatedAt
-  deletedAt      DateTime?
+  id           String          @id @default(cuid())
+  userId       String
+  user         User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  ticketNumber String          @unique
+  subject      String
+  category     SupportCategory
+  priority     SupportPriority @default(MEDIUM)
+  status       SupportStatus   @default(OPEN)
+  description  String
+  attachments  String[]
+  assignedToId String?
+  assignedTo   User?           @relation("TicketAssigned", fields: [assignedToId], references: [id], onDelete: SetNull)
+  resolvedAt   DateTime?
+  closedAt     DateTime?
+  resolution   String?
+  rating       Int?
+  feedback     String?
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+  deletedAt    DateTime?
 
-  messages       SupportMessage[]
+  messages SupportMessage[]
 
   @@index([userId])
   @@index([status, priority])
@@ -1078,8 +1135,9 @@ model SupportMessage {
   ticketId    String
   ticket      SupportTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
   senderId    String
+  sender      User          @relation(fields: [senderId], references: [id], onDelete: Cascade)
   senderRole  String        @default("USER")
-  message     String        @db.Text
+  message     String
   attachments String[]
   isInternal  Boolean       @default(false)
   createdAt   DateTime      @default(now())
@@ -1088,12 +1146,14 @@ model SupportMessage {
   @@map("support_messages")
 }
 
-// ---------- SETTINGS ----------
+// ============================================
+// SETTINGS
+// ============================================
 model Setting {
   id          String    @id @default(cuid())
   key         String    @unique
   value       Json
-  type        String    // STRING, NUMBER, BOOLEAN, OBJECT, ARRAY
+  type        String
   category    String
   description String?
   isEditable  Boolean   @default(true)
@@ -1106,36 +1166,40 @@ model Setting {
   @@map("settings")
 }
 
-// ---------- BANNER ----------
+// ============================================
+// BANNERS
+// ============================================
 model Banner {
-  id           String          @id @default(cuid())
+  id           String         @id @default(cuid())
   title        String
   subtitle     String?
   image        String
-  linkType     BannerLinkType  @default(NONE)
+  linkType     BannerLinkType @default(NONE)
   link         String?
   linkData     Json?
-  position     Int             @default(0)
-  displayOrder Int             @default(0)
-  isActive     Boolean         @default(true)
-  isFeatured   Boolean         @default(false)
-  startDate    DateTime        @default(now())
+  position     Int            @default(0)
+  displayOrder Int            @default(0)
+  isActive     Boolean        @default(true)
+  isFeatured   Boolean        @default(false)
+  startDate    DateTime       @default(now())
   endDate      DateTime?
-  platform     String[]        @default(["ALL"])
-  roles        String[]        @default(["ALL"])
-  clickCount   Int             @default(0)
-  viewCount    Int             @default(0)
+  platform     String[]       @default(["ALL"])
+  roles        String[]       @default(["ALL"])
+  clickCount   Int            @default(0)
+  viewCount    Int            @default(0)
   createdBy    String?
   updatedBy    String?
-  createdAt    DateTime        @default(now())
-  updatedAt    DateTime        @updatedAt
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
   deletedAt    DateTime?
 
   @@index([isActive])
   @@map("banners")
 }
 
-// ---------- APP VERSION ----------
+// ============================================
+// APP VERSIONS
+// ============================================
 model AppVersion {
   id              String    @id @default(cuid())
   version         String
@@ -1143,7 +1207,7 @@ model AppVersion {
   minVersion      String
   requiredVersion String
   downloadUrl     String?
-  releaseNotes    String?   @db.Text
+  releaseNotes    String?
   isMandatory     Boolean   @default(false)
   isLatest        Boolean   @default(true)
   releasedAt      DateTime  @default(now())
@@ -1156,59 +1220,65 @@ model AppVersion {
   @@map("app_versions")
 }
 
-// ---------- MAINTENANCE ----------
+// ============================================
+// MAINTENANCE
+// ============================================
 model Maintenance {
-  id               String           @id @default(cuid())
-  isEnabled        Boolean          @default(false)
-  message          String           @db.Text
-  type             MaintenanceType  @default(SCHEDULED)
+  id               String          @id @default(cuid())
+  isEnabled        Boolean         @default(false)
+  message          String
+  type             MaintenanceType @default(SCHEDULED)
   scheduledStart   DateTime?
   scheduledEnd     DateTime?
   startedAt        DateTime?
   endedAt          DateTime?
   affectedServices String[]
   updatedBy        String?
-  createdAt        DateTime         @default(now())
-  updatedAt        DateTime         @updatedAt
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
   deletedAt        DateTime?
 
   @@map("maintenance")
 }
 
-// ---------- AUTH LOG ----------
+// ============================================
+// AUTH LOGS
+// ============================================
 model AuthLog {
-  id         String     @id @default(cuid())
+  id         String      @id @default(cuid())
   userId     String?
-  user       User?      @relation(fields: [userId], references: [id], onDelete: SetNull)
+  user       User?       @relation(fields: [userId], references: [id], onDelete: SetNull)
   phone      String
   action     AuthAction
   status     AuditStatus
-  error      String?    @db.Text
+  error      String?
   ip         String?
-  userAgent  String?    @db.Text
+  userAgent  String?
   deviceInfo Json?
-  createdAt  DateTime   @default(now())
+  createdAt  DateTime    @default(now())
 
   @@index([userId, createdAt])
   @@index([phone, createdAt])
   @@map("auth_logs")
 }
 
-// ---------- AUDIT LOG ----------
+// ============================================
+// AUDIT LOGS
+// ============================================
 model AuditLog {
-  id          String      @id @default(cuid())
-  userId      String?
-  user        User?       @relation(fields: [userId], references: [id], onDelete: SetNull)
-  action      String
-  resource    String
-  resourceId  String?
-  changes     Json?
-  status      AuditStatus @default(SUCCESS)
-  error       String?     @db.Text
-  metadata    Json?
-  ip          String?
-  userAgent   String?     @db.Text
-  createdAt   DateTime    @default(now())
+  id         String      @id @default(cuid())
+  userId     String?
+  user       User?       @relation(fields: [userId], references: [id], onDelete: SetNull)
+  action     String
+  resource   String
+  resourceId String?
+  changes    Json?
+  status     AuditStatus @default(SUCCESS)
+  error      String?
+  metadata   Json?
+  ip         String?
+  userAgent  String?
+  createdAt  DateTime    @default(now())
 
   @@index([userId, createdAt])
   @@index([action, createdAt])

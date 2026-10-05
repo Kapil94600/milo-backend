@@ -1,5 +1,5 @@
 // ============================================
-// Subscription Service — Plans + User Subscriptions (with image upload)
+// Subscription Service — Plans + User Subscriptions
 // ============================================
 
 const { prisma } = require('../config/database');
@@ -7,12 +7,13 @@ const AppError = require('../utils/AppError');
 const helpers = require('../utils/helpers');
 const WalletService = require('./wallet.service');
 const UploadService = require('./upload.service');
+const NotificationService = require('./notification.service');
 const { logInfo, logError } = require('../utils/logger');
 const { PaymentStatus } = require('../common/enums');
 
 class SubscriptionService {
   // ============================================
-  // HELPER: Resolve image (file OR url)
+  // HELPER: Resolve image
   // ============================================
   static async resolvePlanImage(data) {
     if (data._uploadedFile) {
@@ -29,7 +30,7 @@ class SubscriptionService {
   }
 
   // ============================================
-  // 1. CREATE PLAN (admin)
+  // 1. CREATE PLAN
   // ============================================
   static async createPlan(data) {
     const imageUrl = await this.resolvePlanImage(data);
@@ -59,7 +60,7 @@ class SubscriptionService {
   }
 
   // ============================================
-  // 2. GET PLANS (public)
+  // 2. GET PLANS
   // ============================================
   static async getPlans(activeOnly = true) {
     const where = { deletedAt: null };
@@ -78,7 +79,7 @@ class SubscriptionService {
   }
 
   // ============================================
-  // 3. UPDATE PLAN (admin) — supports file upload
+  // 3. UPDATE PLAN
   // ============================================
   static async updatePlan(id, data) {
     const existing = await prisma.subscriptionPlan.findUnique({ where: { id } });
@@ -92,7 +93,6 @@ class SubscriptionService {
     ];
     const updates = helpers.pick(data, allowed);
 
-    // Handle image (file OR url)
     if (data._uploadedFile || data.image !== undefined) {
       updates.image = await this.resolvePlanImage(data);
     }
@@ -101,11 +101,22 @@ class SubscriptionService {
   }
 
   // ============================================
-  // 4. DELETE PLAN (soft)
+  // 4. DELETE PLAN
   // ============================================
   static async deletePlan(id) {
     const existing = await prisma.subscriptionPlan.findUnique({ where: { id } });
     if (!existing) throw AppError.notFound('Plan not found');
+
+    // Check for active subscriptions
+    const activeCount = await prisma.subscription.count({
+      where: { planId: id, isActive: true, endDate: { gt: new Date() } },
+    });
+
+    if (activeCount > 0) {
+      throw AppError.badRequest(
+        `Cannot delete plan with ${activeCount} active subscriptions`
+      );
+    }
 
     return prisma.subscriptionPlan.update({
       where: { id },
@@ -114,13 +125,12 @@ class SubscriptionService {
   }
 
   // ============================================
-  // 5. SUBSCRIBE (user)
+  // 5. SUBSCRIBE
   // ============================================
   static async subscribe(userId, planId, autoRenew = false) {
     const plan = await this.getPlanById(planId);
     if (!plan.isActive) throw AppError.badRequest('Plan not available');
 
-    // Check if user already has active subscription
     const existing = await prisma.subscription.findFirst({
       where: {
         userId,
@@ -134,7 +144,6 @@ class SubscriptionService {
       throw AppError.conflict('You already have an active subscription');
     }
 
-    // Check wallet balance
     const wallet = await WalletService.getWallet(userId);
     if (wallet.balance < plan.price) {
       throw AppError.badRequest(`Insufficient balance. Need ₹${plan.price}`);
@@ -143,18 +152,20 @@ class SubscriptionService {
     const startDate = new Date();
     const endDate = helpers.addDays(startDate, plan.durationDays);
 
-    // Create subscription + deduct money in transaction
     const subscription = await prisma.$transaction(async (tx) => {
-      // Deduct money
-      await tx.wallet.update({
-        where: { userId },
+      // Atomic balance check + deduct
+      const updated = await tx.wallet.updateMany({
+        where: { userId, balance: { gte: plan.price } },
         data: {
           balance: { decrement: plan.price },
           totalSpent: { increment: plan.price },
         },
       });
 
-      // Transaction log
+      if (updated.count === 0) {
+        throw AppError.badRequest('Insufficient balance');
+      }
+
       await tx.transaction.create({
         data: {
           userId,
@@ -169,7 +180,6 @@ class SubscriptionService {
         },
       });
 
-      // Create subscription
       const sub = await tx.subscription.create({
         data: {
           userId,
@@ -200,9 +210,9 @@ class SubscriptionService {
         include: { plan: true },
       });
 
-      // Add bonus coins if any
+      // Bonus coins
       if (plan.bonusCoins > 0) {
-        const updated = await tx.wallet.update({
+        const wallet2 = await tx.wallet.update({
           where: { userId },
           data: {
             coins: { increment: plan.bonusCoins },
@@ -219,8 +229,8 @@ class SubscriptionService {
             coins: plan.bonusCoins,
             description: `Bonus coins from ${plan.name}`,
             status: 'COMPLETED',
-            balanceAfter: updated.balance,
-            coinsAfter: updated.coins,
+            balanceAfter: wallet2.balance,
+            coinsAfter: wallet2.coins,
             referenceModel: 'Subscription',
             referenceId: sub.id,
           },
@@ -231,11 +241,17 @@ class SubscriptionService {
     });
 
     logInfo(`User ${userId} subscribed to ${plan.name}`);
+
+    // Notify
+    NotificationService.sendSubscriptionNotification(userId, plan, 'ACTIVATED').catch(
+      () => {}
+    );
+
     return subscription;
   }
 
   // ============================================
-  // 6. GET MY SUBSCRIPTION (active)
+  // 6. GET ACTIVE SUBSCRIPTION
   // ============================================
   static async getActiveSubscription(userId) {
     return prisma.subscription.findFirst({
@@ -277,26 +293,18 @@ class SubscriptionService {
   // ============================================
   static async cancelSubscription(userId) {
     const sub = await prisma.subscription.findFirst({
-      where: {
-        userId,
-        isActive: true,
-        endDate: { gt: new Date() },
-      },
+      where: { userId, isActive: true, endDate: { gt: new Date() } },
     });
-
     if (!sub) throw AppError.notFound('No active subscription');
 
     return prisma.subscription.update({
       where: { id: sub.id },
-      data: {
-        autoRenew: false,
-        cancelledAt: new Date(),
-      },
+      data: { autoRenew: false, cancelledAt: new Date() },
     });
   }
 
   // ============================================
-  // 9. CHECK ACTIVE SUBSCRIPTION
+  // 9. HAS ACTIVE SUBSCRIPTION
   // ============================================
   static async hasActiveSubscription(userId) {
     const count = await prisma.subscription.count({
@@ -315,13 +323,8 @@ class SubscriptionService {
   // ============================================
   static async updateUsage(userId, type, amount = 1) {
     const sub = await prisma.subscription.findFirst({
-      where: {
-        userId,
-        isActive: true,
-        endDate: { gt: new Date() },
-      },
+      where: { userId, isActive: true, endDate: { gt: new Date() } },
     });
-
     if (!sub) return null;
 
     const usage = sub.usage || {
@@ -343,7 +346,7 @@ class SubscriptionService {
   }
 
   // ============================================
-  // 11. RENEW EXPIRING (cron job)
+  // 11. CHECK + RENEW EXPIRING (cron)
   // ============================================
   static async checkAndRenewSubscriptions() {
     const now = new Date();
@@ -400,6 +403,13 @@ class SubscriptionService {
             });
           });
 
+          // Notify
+          NotificationService.sendSubscriptionNotification(
+            sub.userId,
+            sub.plan,
+            'RENEWED'
+          ).catch(() => {});
+
           renewed++;
         } else {
           await prisma.subscription.update({
@@ -418,7 +428,7 @@ class SubscriptionService {
   }
 
   // ============================================
-  // 12. GET STATS (admin)
+  // 12. GET STATS
   // ============================================
   static async getStats() {
     const [active, expired, total, revenue] = await Promise.all([
@@ -444,7 +454,7 @@ class SubscriptionService {
   }
 
   // ============================================
-  // 13. GET PLAN SUBSCRIPTIONS (admin)
+  // 13. GET PLAN SUBSCRIPTIONS
   // ============================================
   static async getPlanSubscriptions(planId) {
     return prisma.subscription.findMany({
