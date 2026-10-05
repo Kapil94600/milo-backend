@@ -1,5 +1,5 @@
 // ============================================
-// Girl Service — Complete with Rate Management
+// Girl Service — Bond (Complete with Payout Logic)
 // ============================================
 
 const { prisma } = require('../config/database');
@@ -7,7 +7,7 @@ const AppError = require('../utils/AppError');
 const helpers = require('../utils/helpers');
 const UploadService = require('./upload.service');
 const NotificationService = require('./notification.service');
-const { logInfo } = require('../utils/logger');
+const { logInfo, logError } = require('../utils/logger');
 const {
   ROLES,
   Status,
@@ -16,12 +16,16 @@ const {
 } = require('../common/enums');
 
 // ⭐ Rate limits
-const MIN_HOURLY_RATE = 50;      // ₹50/hour min
-const MAX_HOURLY_RATE = 5000;    // ₹5000/hour max
-const MIN_VIDEO_RATE = 100;      // ₹100/hour min
-const MAX_VIDEO_RATE = 10000;    // ₹10000/hour max
-const MIN_CHAT_RATE = 1;         // 1 coin min
-const MAX_CHAT_RATE = 50;        // 50 coins max
+const MIN_HOURLY_RATE = 50;
+const MAX_HOURLY_RATE = 5000;
+const MIN_VIDEO_RATE = 100;
+const MAX_VIDEO_RATE = 10000;
+const MIN_CHAT_RATE = 1;
+const MAX_CHAT_RATE = 50;
+
+// ⭐ Payout conversion defaults
+const DEFAULT_COIN_TO_RUPEE_RATE = 1; // 1 coin = ₹1
+const DEFAULT_GIRL_PAYOUT_PERCENT = 70; // 70% of coins → ₹ balance
 
 class GirlService {
   // ============================================
@@ -61,7 +65,12 @@ class GirlService {
   // ============================================
   // HELPER: Resolve file OR url
   // ============================================
-  static async resolveRequiredFile(data, field = '_uploadedFile', folder = 'verification', errorMsg = 'File is required') {
+  static async resolveRequiredFile(
+    data,
+    field = '_uploadedFile',
+    folder = 'verification',
+    errorMsg = 'File is required'
+  ) {
     if (data[field]) {
       const result = await UploadService.uploadFile(data[field], folder);
       return result.url;
@@ -70,6 +79,52 @@ class GirlService {
       return data.url.trim();
     }
     throw AppError.badRequest(errorMsg);
+  }
+
+  // ============================================
+  // ⭐ HELPER: Get Payout Rate (coins → rupees)
+  // ============================================
+  static async getPayoutRate() {
+    try {
+      const [rateSetting, percentSetting] = await Promise.all([
+        prisma.setting.findUnique({
+          where: { key: 'COIN_TO_RUPEE_RATE' },
+        }),
+        prisma.setting.findUnique({
+          where: { key: 'GIRL_PAYOUT_PERCENT' },
+        }),
+      ]);
+
+      return {
+        coinToRupeeRate:
+          Number(rateSetting?.value) || DEFAULT_COIN_TO_RUPEE_RATE,
+        payoutPercent:
+          Number(percentSetting?.value) || DEFAULT_GIRL_PAYOUT_PERCENT,
+      };
+    } catch {
+      return {
+        coinToRupeeRate: DEFAULT_COIN_TO_RUPEE_RATE,
+        payoutPercent: DEFAULT_GIRL_PAYOUT_PERCENT,
+      };
+    }
+  }
+
+  // ============================================
+  // ⭐ Convert coins to rupees for payout
+  // ============================================
+  static async calculatePayout(coins) {
+    const { coinToRupeeRate, payoutPercent } = await this.getPayoutRate();
+
+    // Example: 1000 coins, rate=1, percent=70
+    // → 1000 * 1 * (70/100) = ₹700
+    const rupees = coins * coinToRupeeRate * (payoutPercent / 100);
+
+    return {
+      coins,
+      coinToRupeeRate,
+      payoutPercent,
+      rupees: Math.round(rupees * 100) / 100,
+    };
   }
 
   // ============================================
@@ -83,7 +138,6 @@ class GirlService {
       throw AppError.conflict('You are already a registered girl');
     }
 
-    // Validate required data
     if (!data.about || data.about.trim().length < 20) {
       throw AppError.badRequest('Please write at least 20 characters about yourself');
     }
@@ -94,14 +148,12 @@ class GirlService {
       throw AppError.badRequest('Please select at least one language');
     }
 
-    // ⭐ Validate rates
     this.validateRates({
       hourlyRate: data.hourlyRate,
       videoCallRate: data.videoCallRate,
       chatMessageRate: data.chatMessageRate,
     });
 
-    // Check existing request
     const existing = await prisma.girlRequest.findUnique({ where: { userId } });
 
     if (existing) {
@@ -109,7 +161,6 @@ class GirlService {
         throw AppError.conflict('Your request is already pending approval');
       }
 
-      // Re-submit rejected request
       const updated = await prisma.girlRequest.update({
         where: { userId },
         data: {
@@ -134,7 +185,6 @@ class GirlService {
       return updated;
     }
 
-    // Create new request
     const request = await prisma.girlRequest.create({
       data: {
         userId,
@@ -247,7 +297,6 @@ class GirlService {
               languages: request.languages,
               specialties: request.specialties,
               about: request.about,
-              // ⭐ Copy rates from request
               hourlyRate: request.hourlyRate,
               videoCallRate: request.videoCallRate,
               chatMessageRate: request.chatMessageRate,
@@ -315,7 +364,6 @@ class GirlService {
     const existing = await prisma.girl.findUnique({ where: { userId: user.id } });
     if (existing) throw AppError.conflict('Girl profile already exists');
 
-    // Validate rates
     this.validateRates(girlData);
 
     await prisma.user.update({
@@ -354,7 +402,7 @@ class GirlService {
   }
 
   // ============================================
-  // SELF — Create My Profile (Direct — Deprecated)
+  // SELF — Create My Profile (Deprecated)
   // ============================================
   static async createMyProfile(userId, data) {
     return this.submitGirlRequest(userId, data);
@@ -406,13 +454,12 @@ class GirlService {
   }
 
   // ============================================
-  // ⭐ SELF — Update My Profile (with rates)
+  // SELF — Update My Profile (with rates)
   // ============================================
   static async updateMyProfile(userId, data) {
     const girl = await prisma.girl.findUnique({ where: { userId } });
     if (!girl) throw AppError.notFound('Girl profile not found');
 
-    // Validate rates if provided
     this.validateRates(data);
 
     const allowed = [
@@ -429,7 +476,6 @@ class GirlService {
     ];
     const updates = helpers.pick(data, allowed);
 
-    // ⭐ Handle rate updates
     const rateUpdates = {};
     if (data.hourlyRate !== undefined) {
       rateUpdates.pendingHourlyRate = Number(data.hourlyRate);
@@ -441,7 +487,6 @@ class GirlService {
       rateUpdates.pendingChatRate = Number(data.chatMessageRate);
     }
 
-    // ⭐ If any rate is being changed, mark for admin approval
     const hasRateChange =
       data.hourlyRate !== undefined ||
       data.videoCallRate !== undefined ||
@@ -450,9 +495,7 @@ class GirlService {
     if (hasRateChange) {
       updates.rateApproved = false;
 
-      // Notify admin about rate change request
       try {
-        // Find super admin or notify
         const admins = await prisma.user.findMany({
           where: { role: 'ADMIN', isActive: true },
           select: { id: true },
@@ -487,7 +530,7 @@ class GirlService {
   }
 
   // ============================================
-  // ⭐ ADMIN — Approve Rate Change
+  // ADMIN — Approve Rate Change
   // ============================================
   static async approveRateChange(girlId, action = 'APPROVED') {
     const girl = await prisma.girl.findUnique({ where: { id: girlId } });
@@ -516,7 +559,6 @@ class GirlService {
         data: updates,
       });
 
-      // Notify girl
       try {
         await NotificationService.createNotification(girl.userId, {
           type: 'SYSTEM',
@@ -649,7 +691,6 @@ class GirlService {
     if (minRating) where.rating = { gte: parseFloat(minRating) };
     if (maxRating) where.rating = { ...where.rating, lte: parseFloat(maxRating) };
 
-    // ⭐ Rate filter
     if (minRate || maxRate) {
       where.hourlyRate = {};
       if (minRate) where.hourlyRate.gte = parseFloat(minRate);
@@ -669,7 +710,6 @@ class GirlService {
       };
     }
 
-    // ⭐ Sort options
     let orderBy;
     switch (sortBy) {
       case 'priceLow':
@@ -815,7 +855,6 @@ class GirlService {
     const girl = await prisma.girl.findUnique({ where: { id: girlId } });
     if (!girl) throw AppError.notFound('Girl profile not found');
 
-    // Admin can update rates directly
     this.validateRates(data);
 
     const allowed = [
@@ -825,7 +864,6 @@ class GirlService {
     ];
     const updates = helpers.pick(data, allowed);
 
-    // Admin can update rates
     if (data.hourlyRate !== undefined) updates.hourlyRate = Number(data.hourlyRate);
     if (data.videoCallRate !== undefined) updates.videoCallRate = Number(data.videoCallRate);
     if (data.chatMessageRate !== undefined) updates.chatMessageRate = Number(data.chatMessageRate);
@@ -879,7 +917,7 @@ class GirlService {
   }
 
   // ============================================
-  // Update Earnings
+  // ⭐ Update Earnings (with payout conversion)
   // ============================================
   static async updateEarnings(userId, amount) {
     return prisma.girl.update({
@@ -892,6 +930,47 @@ class GirlService {
         totalCoinsEarned: { increment: amount },
       },
     });
+  }
+
+  // ============================================
+  // ⭐ Get Earnings Breakdown (with ₹ conversion)
+  // ============================================
+  static async getEarningsBreakdown(userId) {
+    const girl = await prisma.girl.findUnique({ where: { userId } });
+    if (!girl) throw AppError.notFound('Girl profile not found');
+
+    const wallet = await prisma.wallet.findUnique({ where: { userId } });
+
+    const [totalPayout, todayPayout, weekPayout, monthPayout] =
+      await Promise.all([
+        this.calculatePayout(girl.earningsTotal || 0),
+        this.calculatePayout(girl.earningsToday || 0),
+        this.calculatePayout(girl.earningsThisWeek || 0),
+        this.calculatePayout(girl.earningsThisMonth || 0),
+      ]);
+
+    return {
+      coins: {
+        total: girl.totalCoinsEarned || 0,
+        available: wallet?.coins || 0,
+        earningsTotal: girl.earningsTotal || 0,
+        earningsToday: girl.earningsToday || 0,
+        earningsThisWeek: girl.earningsThisWeek || 0,
+        earningsThisMonth: girl.earningsThisMonth || 0,
+      },
+      rupees: {
+        total: totalPayout.rupees,
+        today: todayPayout.rupees,
+        thisWeek: weekPayout.rupees,
+        thisMonth: monthPayout.rupees,
+        balance: wallet?.balance || 0,
+        pendingBalance: wallet?.pendingBalance || 0,
+      },
+      rate: {
+        coinToRupeeRate: totalPayout.coinToRupeeRate,
+        payoutPercent: totalPayout.payoutPercent,
+      },
+    };
   }
 
   // ============================================
@@ -916,12 +995,17 @@ class GirlService {
   }
 
   // ============================================
-  // ⭐ Get Girls with Pending Rate Approval (Admin)
+  // Get Girls with Pending Rate Approval (Admin)
   // ============================================
   static async getPendingRateChanges({ page = 1, limit = 20 } = {}) {
     const where = {
       rateApproved: false,
       deletedAt: null,
+      OR: [
+        { pendingHourlyRate: { not: null } },
+        { pendingVideoRate: { not: null } },
+        { pendingChatRate: { not: null } },
+      ],
     };
 
     const skip = (page - 1) * limit;
@@ -945,6 +1029,209 @@ class GirlService {
       data: girls,
       pagination: helpers.buildPagination(page, limit, total),
     };
+  }
+    // ============================================
+  // ⭐ AUTO PAYOUT (NEW)
+  // ============================================
+
+  /**
+   * Get girls eligible for auto-payout
+   * Criteria:
+   * - isVerified
+   * - earnings > minPayout
+   * - lastPayoutAt > 7 days ago (or never)
+   * - isActive
+   */
+  static async getEligibleForPayout({ minPayout = 500, days = 7 } = {}) {
+    const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+
+    return prisma.girl.findMany({
+      where: {
+        status: 'ACTIVE',
+        isVerified: true,
+        deletedAt: null,
+        OR: [
+          { lastPayoutAt: null },
+          { lastPayoutAt: { lt: cutoff } },
+        ],
+      },
+      include: {
+        user: {
+          select: {
+            id: true,
+            name: true,
+            phone: true,
+            email: true,
+          },
+        },
+      },
+    }).then((girls) => {
+      // Filter those who have enough balance
+      return girls.filter((g) => {
+        const earningsInRupees = g.earningsTotal || 0;
+        return earningsInRupees >= minPayout;
+      });
+    });
+  }
+
+  /**
+   * Process auto-payout for a single girl
+   * Transfers girl's `balance` (rupees) to withdrawal request
+   */
+  static async processAutoPayout(girlId, adminId = null) {
+    const girl = await prisma.girl.findUnique({
+      where: { id: girlId },
+      include: { user: true },
+    });
+
+    if (!girl) throw AppError.notFound('Girl not found');
+    if (girl.status !== 'ACTIVE') {
+      throw AppError.badRequest('Girl is not active');
+    }
+
+    // Get wallet
+    const wallet = await prisma.wallet.findUnique({
+      where: { userId: girl.userId },
+    });
+
+    if (!wallet || wallet.balance <= 0) {
+      return {
+        success: false,
+        reason: 'NO_BALANCE',
+        girlId,
+        balance: 0,
+      };
+    }
+
+    // Get settings
+    const { minAmount, feePercent } = await require('./wallet.service').getWithdrawalSettings();
+
+    if (wallet.balance < minAmount) {
+      return {
+        success: false,
+        reason: 'BELOW_MIN',
+        girlId,
+        balance: wallet.balance,
+        minAmount,
+      };
+    }
+
+    const amount = wallet.balance;
+    const fee = Math.round((amount * feePercent) / 100 * 100) / 100;
+    const netAmount = Math.round((amount - fee) * 100) / 100;
+
+    // Create withdrawal request (auto-approved since it's system generated)
+    const result = await prisma.$transaction(async (tx) => {
+      // Deduct from wallet
+      const updated = await tx.wallet.updateMany({
+        where: {
+          userId: girl.userId,
+          balance: { gte: amount },
+        },
+        data: {
+          balance: { decrement: amount },
+          pendingBalance: { increment: amount },
+        },
+      });
+
+      if (updated.count === 0) {
+        throw new Error('Insufficient balance');
+      }
+
+      // Create withdrawal record
+      const withdrawal = await tx.withdrawal.create({
+        data: {
+          userId: girl.userId,
+          amount,
+          fee,
+          netAmount,
+          method: 'AUTO_PAYOUT',
+          status: 'APPROVED', // Auto-approved
+          processedBy: adminId,
+          processedAt: new Date(),
+          accountName: girl.user.name,
+          accountNumber: girl.user.phone, // Placeholder
+        },
+      });
+
+      // Create transaction
+      await tx.transaction.create({
+        data: {
+          userId: girl.userId,
+          type: 'DEBIT',
+          category: 'WITHDRAWAL',
+          amount,
+          coins: 0,
+          description: `Auto-payout (weekly)`,
+          status: 'PENDING',
+          referenceId: withdrawal.id,
+          referenceModel: 'Withdrawal',
+        },
+      });
+
+      // Update girl last payout
+      await tx.girl.update({
+        where: { id: girlId },
+        data: {
+          lastPayoutAt: new Date(),
+          lastPayoutAmount: amount,
+        },
+      });
+
+      return withdrawal;
+    });
+
+    logInfo(
+      `Auto-payout created for girl ${girlId}: ₹${netAmount} (fee: ₹${fee})`
+    );
+
+    return {
+      success: true,
+      girlId,
+      amount,
+      netAmount,
+      fee,
+      withdrawalId: result.id,
+    };
+  }
+
+  /**
+   * Run auto-payout for all eligible girls
+   */
+  static async runAutoPayout() {
+    const girls = await this.getEligibleForPayout();
+
+    const results = {
+      total: girls.length,
+      success: 0,
+      failed: 0,
+      skipped: 0,
+      totalAmount: 0,
+      errors: [],
+    };
+
+    for (const girl of girls) {
+      try {
+        const result = await this.processAutoPayout(girl.id);
+
+        if (result.success) {
+          results.success++;
+          results.totalAmount += result.netAmount || 0;
+        } else {
+          results.skipped++;
+        }
+      } catch (e) {
+        results.failed++;
+        results.errors.push({ girlId: girl.id, error: e.message });
+        logError(`Auto-payout failed for girl ${girl.id}`, e);
+      }
+    }
+
+    logInfo(
+      `Auto-payout complete: ${results.success} success, ${results.skipped} skipped, ${results.failed} failed, ₹${results.totalAmount} total`
+    );
+
+    return results;
   }
 }
 

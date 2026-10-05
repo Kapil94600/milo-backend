@@ -1,5 +1,5 @@
 // ============================================
-// Call Controller
+// Call Controller (Bond) — Complete
 // ============================================
 
 const asyncHandler = require('../utils/asyncHandler');
@@ -73,9 +73,7 @@ const getCallRates = asyncHandler(async (req, res) => {
   return ApiResponse.success(res, rates, 'Call rates fetched');
 });
 
-// ============================================
-// ✅ NEW: GET /calls/video-eligibility
-// ============================================
+// GET /calls/video-eligibility
 const getVideoEligibility = asyncHandler(async (req, res) => {
   const eligibility = await CallService.checkVideoEligibility(req.user.id);
   return ApiResponse.success(res, eligibility, 'Video eligibility checked');
@@ -95,11 +93,32 @@ const saveRecording = asyncHandler(async (req, res) => {
 
 // PUT /calls/admin/rates
 const updateCallRates = asyncHandler(async (req, res) => {
-  const { voiceRate, videoRate, minCoinsForVideo } = req.body;
-  const rates = await CallService.updateCallRates({ voiceRate, videoRate, minCoinsForVideo });
+  const { voiceRate, videoRate, minCoinsForVideo, platformCommission } = req.body;
+  const rates = await CallService.updateCallRates({
+    voiceRate,
+    videoRate,
+    minCoinsForVideo,
+    platformCommission,
+  });
   return ApiResponse.success(res, rates, 'Call rates updated');
 });
 
+// ⭐ NEW: GET /calls/admin/all
+const getAllCalls = asyncHandler(async (req, res) => {
+  const { page, limit, type, status, userId } = req.query;
+  const result = await CallService.getAllCalls({
+    page: parseInt(page) || 1,
+    limit: parseInt(limit) || 20,
+    type: type || undefined,
+    status: status || undefined,
+    userId: userId || undefined,
+  });
+  return ApiResponse.success(res, result, 'All calls fetched');
+});
+
+// ============================================
+// Exports
+// ============================================
 module.exports = {
   initiateCall,
   acceptCall,
@@ -111,8 +130,9 @@ module.exports = {
   getMissedCalls,
   getCallStats,
   getCallRates,
-  getVideoEligibility,  // ✅ NEW
+  getVideoEligibility,
   getCallById,
   saveRecording,
   updateCallRates,
+  getAllCalls, // ⭐ NEW
 };

@@ -6,7 +6,6 @@ const { prisma } = require('../config/database');
 const AppError = require('../utils/AppError');
 const helpers = require('../utils/helpers');
 const WalletService = require('./wallet.service');
-const GirlService = require('./girl.service');
 const NotificationService = require('./notification.service');
 const { logInfo, logError } = require('../utils/logger');
 const { CallType, CallStatus, PaymentStatus } = require('../common/enums');
@@ -18,6 +17,15 @@ const DEFAULT_VIDEO_RATE = 20;   // coins per minute
 // Platform commission percent
 const DEFAULT_PLATFORM_COMMISSION = 50;
 const DEFAULT_MIN_COINS_FOR_VIDEO = 50;
+
+// ⭐ Lazy-load socket IO (avoid circular dep)
+const getIO = () => {
+  try {
+    return require('../socket').getIO();
+  } catch (e) {
+    return null;
+  }
+};
 
 class CallService {
   // ============================================
@@ -48,7 +56,6 @@ class CallService {
 
   // ============================================
   // ⭐ HELPER: Get girl-specific rates
-  // Girl ne jo rate set kiya, wahi use hoga
   // ============================================
   static async getGirlRates(receiverId) {
     const receiver = await prisma.user.findUnique({
@@ -56,7 +63,6 @@ class CallService {
       select: { id: true, role: true },
     });
 
-    // If receiver is not a girl, use defaults
     if (!receiver || receiver.role !== 'GIRL') {
       const defaults = await this.getCallRates();
       return {
@@ -84,9 +90,6 @@ class CallService {
       };
     }
 
-    // ⭐ Girl hourly rate → coins per minute
-    // Example: Girl ₹100/hour → 100 coins/hour → 2 coins/min approximately
-    // But since we bill in coins, ₹ = coins (1:1)
     const voiceRatePerMin = Math.max(1, Math.ceil((girl.hourlyRate || 100) / 60));
     const videoRatePerMin = Math.max(2, Math.ceil((girl.videoCallRate || 200) / 60));
 
@@ -133,7 +136,7 @@ class CallService {
   }
 
   // ============================================
-  // ⭐ Initiate Call (uses girl-specific rates)
+  // ⭐ Initiate Call (REST — socket emit added)
   // ============================================
   static async initiateCall(
     callerId,
@@ -174,7 +177,7 @@ class CallService {
     });
     if (blocked) throw AppError.forbidden('Cannot call this user');
 
-    // Check existing active call (transaction-safe)
+    // Check existing active call
     const activeCall = await prisma.call.findFirst({
       where: {
         OR: [
@@ -200,7 +203,7 @@ class CallService {
       }
     }
 
-    // ⭐ Get rates (girl-specific or default)
+    // Get rates
     const rates = await this.getGirlRates(receiverId);
     const coinRate = type === CallType.VOICE ? rates.voiceRate : rates.videoRate;
 
@@ -235,12 +238,70 @@ class CallService {
         startedAt: new Date(),
       },
       include: {
-        caller: { select: { id: true, name: true, profileImage: true } },
-        receiver: { select: { id: true, name: true, profileImage: true } },
+        caller: {
+          select: {
+            id: true,
+            name: true,
+            profileImage: true,
+            phone: true,
+          },
+        },
+        receiver: {
+          select: {
+            id: true,
+            name: true,
+            profileImage: true,
+            phone: true,
+          },
+        },
       },
     });
 
-    // Notify receiver
+    // ⭐⭐⭐ SOCKET EMIT — Notify receiver in real-time ⭐⭐⭐
+    const io = getIO();
+    if (io) {
+      try {
+        // Find receiver's socket
+        const { getUserSocketId } = require('../socket');
+        const receiverSocketId = getUserSocketId(receiverId);
+
+        if (receiverSocketId) {
+          const incomingEvent =
+            type === CallType.VIDEO
+              ? 'call:video:incoming'
+              : 'call:voice:incoming';
+
+          io.to(receiverSocketId).emit(incomingEvent, {
+            callId: call.id,
+            callerId,
+            callerName: caller.name,
+            callerImage: caller.profileImage,
+            type,
+            quality,
+            coinRate: call.coinRate,
+          });
+
+          // Also emit to personal room for multi-device
+          io.to(`user:${receiverId}`).emit(incomingEvent, {
+            callId: call.id,
+            callerId,
+            callerName: caller.name,
+            callerImage: caller.profileImage,
+            type,
+            quality,
+            coinRate: call.coinRate,
+          });
+
+          logInfo(`📞 Call socket emitted to receiver ${receiverId} (${type})`);
+        } else {
+          logInfo(`📞 Receiver ${receiverId} offline — FCM only`);
+        }
+      } catch (e) {
+        logError('Socket emit for incoming call failed', e);
+      }
+    }
+
+    // FCM fallback
     (async () => {
       try {
         await NotificationService.sendCallNotification(callerId, receiverId, type);
@@ -256,7 +317,7 @@ class CallService {
   }
 
   // ============================================
-  // Accept Call
+  // Accept Call — Emit to caller
   // ============================================
   static async acceptCall(callId, receiverId) {
     const call = await prisma.call.findUnique({ where: { id: callId } });
@@ -270,7 +331,6 @@ class CallService {
       throw AppError.badRequest('Call is not in valid state');
     }
 
-    // Re-check caller's wallet
     const wallet = await WalletService.getWallet(call.callerId);
     if (wallet.coins < call.coinRate) {
       throw AppError.badRequest('Caller has insufficient coins');
@@ -282,14 +342,32 @@ class CallService {
         status: CallStatus.CONNECTED,
         startedAt: new Date(),
       },
+      include: {
+        caller: { select: { id: true, name: true, profileImage: true } },
+        receiver: { select: { id: true, name: true, profileImage: true } },
+      },
     });
+
+    // ⭐ Emit ACCEPTED to caller
+    const io = getIO();
+    if (io) {
+      try {
+        io.to(`user:${call.callerId}`).emit('call:accepted', {
+          callId,
+          receiverId,
+        });
+        logInfo(`📞 Call accepted emit to caller ${call.callerId}`);
+      } catch (e) {
+        logError('Socket emit accept failed', e);
+      }
+    }
 
     logInfo(`Call accepted: ${callId}`);
     return updated;
   }
 
   // ============================================
-  // Reject Call
+  // Reject Call — Emit to caller
   // ============================================
   static async rejectCall(callId, userId) {
     const call = await prisma.call.findUnique({ where: { id: callId } });
@@ -307,6 +385,20 @@ class CallService {
         endedById: userId,
       },
     });
+
+    // ⭐ Emit REJECTED to other party
+    const io = getIO();
+    if (io) {
+      try {
+        const targetUserId = call.callerId === userId ? call.receiverId : call.callerId;
+        io.to(`user:${targetUserId}`).emit('call:rejected', {
+          callId,
+          rejectedBy: userId,
+        });
+      } catch (e) {
+        logError('Socket emit reject failed', e);
+      }
+    }
 
     logInfo(`Call rejected: ${callId}`);
     return updated;
@@ -327,7 +419,7 @@ class CallService {
       throw AppError.badRequest('Call already handled');
     }
 
-    return prisma.call.update({
+    const updated = await prisma.call.update({
       where: { id: callId },
       data: {
         status: CallStatus.CANCELLED,
@@ -335,10 +427,25 @@ class CallService {
         endedById: userId,
       },
     });
+
+    // ⭐ Emit CANCELLED to receiver
+    const io = getIO();
+    if (io) {
+      try {
+        io.to(`user:${call.receiverId}`).emit('call:cancelled', {
+          callId,
+          callerId: userId,
+        });
+      } catch (e) {
+        logError('Socket emit cancel failed', e);
+      }
+    }
+
+    return updated;
   }
 
   // ============================================
-  // End Call + Billing (transaction-safe)
+  // End Call + Billing
   // ============================================
   static async endCall(callId, userId) {
     const call = await prisma.call.findUnique({ where: { id: callId } });
@@ -366,10 +473,8 @@ class CallService {
       cost = minutes * call.coinRate;
     }
 
-    // ⭐ Bill in transaction
     try {
       const updated = await prisma.$transaction(async (tx) => {
-        // Update call
         const updatedCall = await tx.call.update({
           where: { id: callId },
           data: {
@@ -382,7 +487,6 @@ class CallService {
           },
         });
 
-        // Bill if connected
         if (cost > 0 && call.status === CallStatus.CONNECTED) {
           await this.billCall(tx, call, cost, minutes, durationSec);
         }
@@ -390,7 +494,6 @@ class CallService {
         return updatedCall;
       });
 
-      // Update final payment status
       if (cost > 0) {
         await prisma.call.update({
           where: { id: callId },
@@ -402,11 +505,27 @@ class CallService {
       updated.needsReview =
         call.status === CallStatus.CONNECTED && durationSec >= 30 && cost > 0;
 
+      // ⭐ Emit ENDED to other party
+      const io = getIO();
+      if (io) {
+        try {
+          const targetUserId =
+            call.callerId === userId ? call.receiverId : call.callerId;
+          io.to(`user:${targetUserId}`).emit('call:ended', {
+            callId,
+            endedBy: userId,
+            duration: durationSec,
+            cost,
+          });
+        } catch (e) {
+          logError('Socket emit end failed', e);
+        }
+      }
+
       logInfo(`Call ended: ${callId}, duration: ${durationSec}s, cost: ${cost} coins`);
       return updated;
     } catch (error) {
       logError('Call end billing failed', error);
-      // Still end the call but mark failed
       const updated = await prisma.call.update({
         where: { id: callId },
         data: {
@@ -423,26 +542,79 @@ class CallService {
   }
 
   // ============================================
-  // ⭐ Bill Call (transaction + girl rate)
+  // Bill Call
+  // ============================================
+  // ============================================
+  // ⭐ Bill Call (with subscription support)
   // ============================================
   static async billCall(tx, call, cost, minutes, durationSec) {
     const { callerId, receiverId, type } = call;
 
-    // Get global commission
     const rates = await this.getCallRates();
     const commissionPercent = rates.platformCommission;
 
-    // Deduct from caller
+    // ⭐ STEP 1: Try subscription
+    const subResult = await this.tryUseSubscription(tx, callerId, minutes, type);
+
+    let billableMinutes = minutes;
+    let actualCost = cost;
+
+    if (subResult.used) {
+      billableMinutes = subResult.billableMinutes || 0;
+      actualCost = billableMinutes * call.coinRate;
+
+      logInfo(
+        `Subscription covered ${subResult.freeMinutes} min, billing ${billableMinutes} min`
+      );
+    }
+
+    // ⭐ STEP 2: If nothing to bill, skip wallet deduction
+    if (actualCost <= 0) {
+      logInfo('Call fully covered by subscription');
+      // Still update stats
+      await tx.user.update({
+        where: { id: callerId },
+        data: {
+          totalCalls: { increment: 1 },
+          ...(type === CallType.VOICE
+            ? { totalVoiceMins: { increment: minutes } }
+            : { totalVideoMins: { increment: minutes } }),
+        },
+      });
+
+      // Credit girl (if girl receiver — based on her share)
+      const receiver = await tx.user.findUnique({
+        where: { id: receiverId },
+        select: { id: true, role: true },
+      });
+
+      if (receiver && receiver.role === 'GIRL') {
+        // Girl still gets commission from platform (or subscription fund)
+        // For simplicity, skip here — could add subscription-funded payout
+        await tx.girl.update({
+          where: { userId: receiverId },
+          data: {
+            totalCalls: { increment: 1 },
+            totalVoiceMins: type === CallType.VOICE ? { increment: minutes } : undefined,
+            totalVideoMins: type === CallType.VIDEO ? { increment: minutes } : undefined,
+          },
+        });
+      }
+
+      return;
+    }
+
+    // ⭐ STEP 3: Deduct coins for billable minutes
     const callerWallet = await tx.wallet.findUnique({ where: { userId: callerId } });
-    if (!callerWallet || callerWallet.coins < cost) {
+    if (!callerWallet || callerWallet.coins < actualCost) {
       throw new Error('Insufficient coins');
     }
 
     await tx.wallet.update({
       where: { userId: callerId },
       data: {
-        coins: { decrement: cost },
-        totalSpent: { increment: cost },
+        coins: { decrement: actualCost },
+        totalSpent: { increment: actualCost },
       },
     });
 
@@ -452,25 +624,26 @@ class CallService {
         type: 'DEBIT',
         category: type === CallType.VOICE ? 'VOICE_CALL' : 'VIDEO_CALL',
         amount: 0,
-        coins: cost,
-        description: `${type} call (${minutes} min)`,
+        coins: actualCost,
+        description: `${type} call (${billableMinutes} min${
+          subResult.used ? `, ${subResult.freeMinutes} free` : ''
+        })`,
         status: 'COMPLETED',
         balanceAfter: callerWallet.balance,
-        coinsAfter: callerWallet.coins - cost,
+        coinsAfter: callerWallet.coins - actualCost,
         referenceId: call.id,
         referenceModel: 'Call',
       },
     });
 
-    // Credit to girl (if receiver is girl)
+    // ⭐ STEP 4: Credit girl (only from actual cost)
     const receiver = await tx.user.findUnique({
       where: { id: receiverId },
       select: { id: true, role: true },
     });
 
     if (receiver && receiver.role === 'GIRL') {
-      // ⭐ Girl gets commission percent of cost
-      const girlEarnings = Math.floor((cost * (100 - commissionPercent)) / 100);
+      const girlEarnings = Math.floor((actualCost * (100 - commissionPercent)) / 100);
 
       if (girlEarnings > 0) {
         const receiverWallet = await tx.wallet.upsert({
@@ -502,7 +675,6 @@ class CallService {
           },
         });
 
-        // Update girl earnings
         await tx.girl.update({
           where: { userId: receiverId },
           data: {
@@ -517,9 +689,7 @@ class CallService {
           },
         });
 
-        logInfo(
-          `Girl ${receiverId} earned ${girlEarnings} coins (${100 - commissionPercent}% of ${cost})`
-        );
+        logInfo(`Girl ${receiverId} earned ${girlEarnings} coins`);
       }
     }
 
@@ -528,14 +698,13 @@ class CallService {
       where: { id: callerId },
       data: {
         totalCalls: { increment: 1 },
-        totalSpent: { increment: cost },
+        totalSpent: { increment: actualCost },
         ...(type === CallType.VOICE
           ? { totalVoiceMins: { increment: minutes } }
           : { totalVideoMins: { increment: minutes } }),
       },
     });
 
-    // Update receiver stats (if not girl, still count)
     if (!receiver || receiver.role !== 'GIRL') {
       await tx.user.update({
         where: { id: receiverId },
@@ -543,8 +712,7 @@ class CallService {
       });
     }
   }
-
-  // ============================================
+  //  ============================================
   // Get Call History
   // ============================================
   static async getCallHistory(userId, { page = 1, limit = 20, type, status } = {}) {
@@ -701,6 +869,16 @@ class CallService {
         where: { id: callId },
         data: { status: CallStatus.MISSED, endedAt: new Date() },
       });
+
+      // ⭐ Emit missed to both
+      const io = getIO();
+      if (io) {
+        try {
+          io.to(`user:${call.callerId}`).emit('call:missed', { callId });
+          io.to(`user:${call.receiverId}`).emit('call:missed', { callId });
+        } catch (e) {}
+      }
+
       logInfo(`Call marked as missed: ${callId}`);
       return updated;
     }
@@ -729,7 +907,7 @@ class CallService {
   }
 
   // ============================================
-  // ⭐ ADMIN — Update Global Call Rates
+  // ADMIN — Update Global Call Rates
   // ============================================
   static async updateCallRates({ voiceRate, videoRate, minCoinsForVideo, platformCommission }) {
     const updates = [];
@@ -744,7 +922,7 @@ class CallService {
             value: voiceRate,
             type: 'NUMBER',
             category: 'COINS',
-            description: 'Default voice call cost per minute (fallback if girl not set)',
+            description: 'Default voice call cost per minute',
           },
         })
       );
@@ -760,7 +938,7 @@ class CallService {
             value: videoRate,
             type: 'NUMBER',
             category: 'COINS',
-            description: 'Default video call cost per minute (fallback)',
+            description: 'Default video call cost per minute',
           },
         })
       );
@@ -795,7 +973,7 @@ class CallService {
             value: platformCommission,
             type: 'NUMBER',
             category: 'CALLS',
-            description: 'Platform commission % from call earnings (girl gets remaining)',
+            description: 'Platform commission % from call earnings',
           },
         })
       );
@@ -822,8 +1000,8 @@ class CallService {
       prisma.call.findMany({
         where,
         include: {
-          caller: { select: { id: true, name: true, phone: true } },
-          receiver: { select: { id: true, name: true, phone: true } },
+          caller: { select: { id: true, name: true, phone: true, profileImage: true } },
+          receiver: { select: { id: true, name: true, phone: true, profileImage: true } },
         },
         orderBy: { createdAt: 'desc' },
         skip,
@@ -835,6 +1013,75 @@ class CallService {
     return {
       data: calls,
       pagination: helpers.buildPagination(page, limit, total),
+    };
+  }
+    // ============================================
+  // ⭐ HELPER: Try subscription for call (voice/video)
+  // ============================================
+  static async tryUseSubscription(tx, userId, minutes, callType) {
+    const sub = await tx.subscription.findFirst({
+      where: {
+        userId,
+        isActive: true,
+        endDate: { gt: new Date() },
+        deletedAt: null,
+      },
+    });
+
+    if (!sub) return { used: false, reason: 'no_subscription' };
+
+    const usage = sub.usage || {
+      messagesUsed: 0,
+      voiceMinutesUsed: 0,
+      videoMinutesUsed: 0,
+      coinsUsed: 0,
+    };
+
+    const plan = await tx.subscriptionPlan.findUnique({
+      where: { id: sub.planId },
+    });
+    if (!plan) return { used: false, reason: 'no_plan' };
+
+    const isVoice = callType === 'VOICE';
+
+    const freeMinutes = isVoice
+      ? plan.freeVoiceMinutes || 0
+      : plan.freeVideoMinutes || 0;
+
+    const usedKey = isVoice ? 'voiceMinutesUsed' : 'videoMinutesUsed';
+    const used = usage[usedKey] || 0;
+
+    // Unlimited (negative = unlimited)
+    const unlimited = freeMinutes === -1;
+
+    if (unlimited || used < freeMinutes) {
+      // Remaining free minutes
+      const remaining = unlimited ? minutes : freeMinutes - used;
+      const freeToUse = Math.min(minutes, remaining);
+      const billableMinutes = minutes - freeToUse;
+
+      const newUsage = {
+        ...usage,
+        [usedKey]: used + freeToUse,
+      };
+
+      await tx.subscription.update({
+        where: { id: sub.id },
+        data: { usage: newUsage },
+      });
+
+      return {
+        used: true,
+        freeMinutes: freeToUse,
+        billableMinutes,
+        planName: plan.name,
+      };
+    }
+
+    return {
+      used: false,
+      reason: 'limit_reached',
+      billableMinutes: minutes,
     };
   }
 }

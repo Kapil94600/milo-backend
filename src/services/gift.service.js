@@ -1,5 +1,5 @@
 // ============================================
-// Gift Service — Catalog + Send/Receive
+// Gift Service — Bond (Gift % from settings)
 // ============================================
 
 const { prisma } = require('../config/database');
@@ -11,9 +11,24 @@ const UploadService = require('./upload.service');
 const { logInfo, logError } = require('../utils/logger');
 const { GiftCategory, GiftRarity, PaymentStatus } = require('../common/enums');
 
-const GIFT_RECEIVER_PERCENT = 50;
+// ⭐ Default (fallback)
+const DEFAULT_GIFT_RECEIVER_PERCENT = 50;
 
 class GiftService {
+  // ============================================
+  // ⭐ HELPER: Get gift receiver percent from settings
+  // ============================================
+  static async getGiftReceiverPercent() {
+    try {
+      const setting = await prisma.setting.findUnique({
+        where: { key: 'COIN_GIFT_RECEIVER_PERCENT' },
+      });
+      return Number(setting?.value) || DEFAULT_GIFT_RECEIVER_PERCENT;
+    } catch {
+      return DEFAULT_GIFT_RECEIVER_PERCENT;
+    }
+  }
+
   // ============================================
   // HELPER: Resolve image
   // ============================================
@@ -73,7 +88,7 @@ class GiftService {
   }
 
   // ============================================
-  // 2. GET GIFTS (admin with filters)
+  // 2. GET GIFTS
   // ============================================
   static async getGifts(
     { page = 1, limit = 20, isActive, category, rarity, isFeatured, search } = {}
@@ -192,7 +207,7 @@ class GiftService {
   }
 
   // ============================================
-  // 8. SEND GIFT (main)
+  // ⭐ 8. SEND GIFT (uses settings for receiver %)
   // ============================================
   static async sendGift(
     senderId,
@@ -215,7 +230,6 @@ class GiftService {
     if (!gift || gift.deletedAt) throw AppError.notFound('Gift not found');
     if (!gift.isActive) throw AppError.badRequest('Gift not available');
 
-    // Check block
     const blocked = await prisma.blockedUser.findFirst({
       where: {
         OR: [
@@ -227,13 +241,15 @@ class GiftService {
     });
     if (blocked) throw AppError.forbidden('Cannot send gift to this user');
 
-    // Check wallet
     const wallet = await WalletService.getWallet(senderId);
     if (wallet.coins < gift.coins) {
       throw AppError.badRequest(
         `Insufficient coins. Need ${gift.coins}, have ${wallet.coins}`
       );
     }
+
+    // ⭐ Get receiver percent from settings
+    const receiverPercent = await this.getGiftReceiverPercent();
 
     const result = await prisma.$transaction(async (tx) => {
       // Atomic deduct
@@ -267,8 +283,8 @@ class GiftService {
         },
       });
 
-      // Credit receiver
-      const receiverCoins = Math.floor((gift.coins * GIFT_RECEIVER_PERCENT) / 100);
+      // ⭐ Credit receiver (uses settings)
+      const receiverCoins = Math.floor((gift.coins * receiverPercent) / 100);
 
       const receiverWallet = await tx.wallet.upsert({
         where: { userId: receiverId },
@@ -334,14 +350,15 @@ class GiftService {
       return giftTx;
     });
 
-    // Notify receiver
     try {
       await NotificationService.sendGiftNotification(receiverId, senderId, gift, isAnonymous);
     } catch (e) {
       logError('Gift notification failed', e);
     }
 
-    logInfo(`Gift sent: ${gift.name} from ${senderId} to ${receiverId}`);
+    logInfo(
+      `Gift sent: ${gift.name} from ${senderId} to ${receiverId} (receiver: ${receiverPercent}%)`
+    );
     return result;
   }
 
@@ -503,6 +520,20 @@ class GiftService {
       where: { rarity, isActive: true, deletedAt: null },
       orderBy: { price: 'asc' },
     });
+  }
+    // ============================================
+  // ⭐ 16. GET UNREAD GIFT COUNT (NEW)
+  // ============================================
+  static async getUnreadGiftCount(userId) {
+    const count = await prisma.giftTransaction.count({
+      where: {
+        receiverId: userId,
+        isRead: false,
+        status: 'COMPLETED',
+      },
+    });
+
+    return { count };
   }
 }
 

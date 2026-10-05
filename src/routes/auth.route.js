@@ -1,11 +1,15 @@
 // ============================================
-// Auth Routes
+// Auth Routes — Bond (OTP-based, with lockout)
 // ============================================
 
 const express = require('express');
 const AuthController = require('../controllers/auth.controller');
 const { authenticate } = require('../middleware/auth');
 const { authLimiter, otpLimiter } = require('../middleware/rateLimiter');
+const {
+  checkOtpLockout,
+  checkOtpRequestLockout,
+} = require('../middleware/loginLockout');
 const { validate } = require('../middleware/validate');
 const AuthValidator = require('../validators/auth.validator');
 const Joi = require('joi');
@@ -16,26 +20,29 @@ const router = express.Router();
 // Public routes
 // ============================================
 
-// Request OTP (legacy — MSG91)
+// Request OTP (legacy — MSG91) — ⭐ with lockout
 router.post(
   '/request-otp',
   otpLimiter,
+  checkOtpRequestLockout,
   validate(AuthValidator.requestOTP),
   AuthController.requestOTP
 );
 
-// Verify OTP (legacy — MSG91)
+// Verify OTP (legacy — MSG91) — ⭐ with lockout
 router.post(
   '/verify-otp',
   authLimiter,
+  checkOtpLockout,
   validate(AuthValidator.verifyOTP),
   AuthController.verifyOTP
 );
 
-// ✅ NEW: Firebase login
+// ✅ Firebase login — ⭐ with lockout
 router.post(
   '/firebase-login',
   authLimiter,
+  checkOtpLockout,
   validate({
     body: Joi.object({
       idToken: Joi.string().required(),
@@ -60,7 +67,7 @@ router.post(
   AuthController.refreshToken
 );
 
-// Create admin (with secret key)
+// Create admin (with secret key) — ⭐ no password
 router.post(
   '/create-admin',
   authLimiter,

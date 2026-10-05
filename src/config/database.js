@@ -13,10 +13,10 @@ const globalForPrisma = globalThis;
 const getDatabaseUrl = () => {
   let url = config.DATABASE_URL;
 
-  // Only add params if not already present
   if (url && !url.includes('connection_limit')) {
     const separator = url.includes('?') ? '&' : '?';
-    url += `${separator}connection_limit=5&pool_timeout=20&connect_timeout=10`;
+    // ⭐ Increased from 5 to 20 (production ready)
+    url += `${separator}connection_limit=20&pool_timeout=20&connect_timeout=10`;
   }
 
   return url;

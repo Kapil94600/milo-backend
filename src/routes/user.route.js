@@ -1,5 +1,5 @@
 // ============================================
-// User Routes
+// User Routes (Bond) — Complete
 // ============================================
 
 const express = require('express');
@@ -12,9 +12,7 @@ const { uploadImage, handleMulterError } = require('../middleware/upload');
 
 const router = express.Router();
 
-// ============================================
 // All routes require authentication
-// ============================================
 router.use(authenticate);
 
 // ============================================
@@ -27,7 +25,7 @@ router.get('/profile', UserController.getProfile);
 // GET /users/stats
 router.get('/stats', UserController.getStats);
 
-// ─── PUT /users/profile — supports file upload ───
+// PUT /users/profile — supports file upload
 router.put(
   '/profile',
   uploadImage.fields([
@@ -40,29 +38,70 @@ router.put(
 );
 
 // PUT /users/settings
-router.put('/settings', validate(UserValidator.updateSettings), UserController.updateSettings);
+router.put(
+  '/settings',
+  validate(UserValidator.updateSettings),
+  UserController.updateSettings
+);
 
 // POST /users/device-token
-router.post('/device-token', validate(UserValidator.addDeviceToken), UserController.addDeviceToken);
+router.post(
+  '/device-token',
+  validate(UserValidator.addDeviceToken),
+  UserController.addDeviceToken
+);
 
 // DELETE /users/device-token
-router.delete('/device-token', validate(UserValidator.removeDeviceToken), UserController.removeDeviceToken);
+router.delete(
+  '/device-token',
+  validate(UserValidator.removeDeviceToken),
+  UserController.removeDeviceToken
+);
 
 // PUT /users/online-status
-router.put('/online-status', validate(UserValidator.updateOnlineStatus), UserController.updateOnlineStatus);
+router.put(
+  '/online-status',
+  validate(UserValidator.updateOnlineStatus),
+  UserController.updateOnlineStatus
+);
 
 // GET /users/nearby
-router.get('/nearby', validate(UserValidator.getNearbyUsers), limiter, UserController.getNearbyUsers);
+router.get(
+  '/nearby',
+  validate(UserValidator.getNearbyUsers),
+  limiter,
+  UserController.getNearbyUsers
+);
+
+// ⭐ NEW: GET /users/search (MUST be before /:id)
+router.get(
+  '/search',
+  validate(UserValidator.searchUsers),
+  limiter,
+  UserController.searchUsers
+);
 
 // DELETE /users/delete-account
 router.delete('/delete-account', UserController.deleteAccount);
-
+// ⭐ NEW: User preferences
+router.get('/preferences', UserController.getPreferences);
+router.put(
+  '/preferences',
+  validate(UserValidator.updatePreferences),
+  UserController.updatePreferences
+);
+router.delete('/preferences', UserController.resetPreferences);
 // ============================================
 // Admin routes
 // ============================================
 
 // GET /users (admin only)
-router.get('/', requireAdmin, validate(UserValidator.getAllUsers), UserController.getAllUsers);
+router.get(
+  '/',
+  requireAdmin,
+  validate(UserValidator.getAllUsers),
+  UserController.getAllUsers
+);
 
 // ============================================
 // Dynamic routes (MUST be LAST)

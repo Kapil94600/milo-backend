@@ -1,5 +1,5 @@
 // ============================================
-// Notification Service — DB + FCM + Email + Socket
+// Notification Service — Bond (Complete with retry + batch fix)
 // ============================================
 
 const { prisma } = require('../config/database');
@@ -9,6 +9,14 @@ const { logInfo, logError, logWarn } = require('../utils/logger');
 
 // Socket.IO instance
 let ioInstance = null;
+
+// ============================================
+// BATCH CONFIG
+// ============================================
+const DB_BATCH_SIZE = 50; // DB insert per batch
+const FCM_BATCH_SIZE = 500; // FCM send per batch
+const MAX_RETRY_ATTEMPTS = 2;
+const RETRY_DELAY_MS = 1000;
 
 class NotificationService {
   // ============================================
@@ -23,6 +31,13 @@ class NotificationService {
   // ============================================
   static async createNotification(userId, data) {
     try {
+      // Check user's notification preferences
+      const shouldAllow = await this.checkUserPreference(userId, data.type);
+      if (!shouldAllow) {
+        logInfo(`Notification to ${userId} skipped (user preference)`);
+        return null;
+      }
+
       const notification = await prisma.notification.create({
         data: {
           userId,
@@ -59,9 +74,9 @@ class NotificationService {
         }
       }
 
-      // Push (FCM)
+      // Push (FCM) — with retry
       if (data.channel === 'PUSH' || data.channel === 'BOTH') {
-        FCMService.sendToUser(
+        this.sendPushWithRetry(
           userId,
           {
             title: data.title,
@@ -92,6 +107,66 @@ class NotificationService {
     } catch (error) {
       logError('createNotification failed', error);
       throw error;
+    }
+  }
+
+  // ============================================
+  // ⭐ Helper: Send push with retry
+  // ============================================
+  static async sendPushWithRetry(userId, notification, data, options = {}) {
+    for (let attempt = 1; attempt <= MAX_RETRY_ATTEMPTS; attempt++) {
+      try {
+        const result = await FCMService.sendToUser(userId, notification, data, options);
+
+        if (result.success) {
+          return result;
+        }
+
+        // If it's a permanent failure (no devices), don't retry
+        if (result.reason === 'NO_DEVICES' || result.reason === 'FCM_NOT_AVAILABLE') {
+          return result;
+        }
+
+        // Otherwise wait and retry
+        if (attempt < MAX_RETRY_ATTEMPTS) {
+          logWarn(`FCM retry ${attempt}/${MAX_RETRY_ATTEMPTS} for user ${userId}`);
+          await new Promise((r) => setTimeout(r, RETRY_DELAY_MS * attempt));
+        }
+      } catch (e) {
+        logError(`FCM send attempt ${attempt} failed`, e);
+
+        if (attempt >= MAX_RETRY_ATTEMPTS) {
+          return { success: false, error: e.message };
+        }
+
+        await new Promise((r) => setTimeout(r, RETRY_DELAY_MS * attempt));
+      }
+    }
+
+    return { success: false, error: 'Max retries exceeded' };
+  }
+
+  // ============================================
+  // ⭐ Helper: Check user preference
+  // ============================================
+  static async checkUserPreference(userId, type) {
+    try {
+      const prefs = await prisma.userPreference.findUnique({
+        where: { userId },
+        select: { notificationPreferences: true },
+      });
+
+      if (!prefs?.notificationPreferences) return true;
+
+      const np = prefs.notificationPreferences;
+      const typeKey = String(type).toLowerCase();
+
+      // If explicitly disabled, skip
+      if (np[typeKey] === false) return false;
+
+      return true;
+    } catch (e) {
+      return true;
     }
   }
 
@@ -214,35 +289,49 @@ class NotificationService {
   }
 
   // ============================================
-  // 9. Send Bulk
+  // 9. Send Bulk (with DB batching)
   // ============================================
   static async sendBulk(userIds, data) {
     return this.sendToMultipleUsers(userIds, data);
   }
 
   static async sendToMultipleUsers(userIds, data) {
-    const notifications = [];
-    const BATCH_SIZE = 50;
+    if (!userIds || userIds.length === 0) {
+      return { sent: 0, total: 0, notifications: [] };
+    }
 
-    for (let i = 0; i < userIds.length; i += BATCH_SIZE) {
-      const batch = userIds.slice(i, i + BATCH_SIZE);
+    const notifications = [];
+    const failedIds = [];
+
+    // ⭐ Process in DB batches
+    for (let i = 0; i < userIds.length; i += DB_BATCH_SIZE) {
+      const batch = userIds.slice(i, i + DB_BATCH_SIZE);
+
+      // Filter by preferences first
+      const allowedBatch = await this.filterByPreferences(batch, data.type);
 
       const results = await Promise.allSettled(
-        batch.map((userId) =>
+        allowedBatch.map((userId) =>
           this.createNotification(userId, { ...data, channel: 'IN_APP' })
         )
       );
 
       results.forEach((r, idx) => {
-        if (r.status === 'fulfilled') {
+        if (r.status === 'fulfilled' && r.value) {
           notifications.push(r.value);
-        } else {
-          logError(`Notification to ${batch[idx]} failed`, r.reason);
+        } else if (r.status === 'rejected') {
+          failedIds.push(allowedBatch[idx]);
+          logError(`Notification to ${allowedBatch[idx]} failed`, r.reason);
         }
       });
+
+      // Small delay between batches to avoid overwhelming DB
+      if (i + DB_BATCH_SIZE < userIds.length) {
+        await new Promise((r) => setTimeout(r, 100));
+      }
     }
 
-    // Send push in batch
+    // ⭐ Send push in FCM batches
     if (data.channel === 'PUSH' || data.channel === 'BOTH') {
       try {
         const devices = await prisma.device.findMany({
@@ -251,24 +340,34 @@ class NotificationService {
         });
 
         const tokens = devices.map((d) => d.token);
-        const FCM_BATCH = 500;
-        for (let i = 0; i < tokens.length; i += FCM_BATCH) {
-          const tokenBatch = tokens.slice(i, i + FCM_BATCH);
-          await FCMService.sendToTokens(
-            tokenBatch,
-            {
-              title: data.title,
-              body: data.body,
-              image: data.image,
-              type: data.type,
-            },
-            {
-              type: data.type,
-              action: data.action,
-              ...(data.data || {}),
-            },
-            { priority: data.priority }
-          );
+
+        for (let i = 0; i < tokens.length; i += FCM_BATCH_SIZE) {
+          const tokenBatch = tokens.slice(i, i + FCM_BATCH_SIZE);
+
+          try {
+            await FCMService.sendToTokens(
+              tokenBatch,
+              {
+                title: data.title,
+                body: data.body,
+                image: data.image,
+                type: data.type,
+              },
+              {
+                type: data.type,
+                action: data.action,
+                ...(data.data || {}),
+              },
+              { priority: data.priority }
+            );
+          } catch (e) {
+            logError(`FCM batch ${i / FCM_BATCH_SIZE + 1} failed`, e);
+          }
+
+          // Small delay between FCM batches
+          if (i + FCM_BATCH_SIZE < tokens.length) {
+            await new Promise((r) => setTimeout(r, 200));
+          }
         }
       } catch (e) {
         logError('Bulk FCM push failed', e);
@@ -277,9 +376,39 @@ class NotificationService {
 
     return {
       sent: notifications.length,
+      failed: failedIds.length,
       total: userIds.length,
       notifications,
     };
+  }
+
+  // ============================================
+  // ⭐ Helper: Filter users by notification preferences
+  // ============================================
+  static async filterByPreferences(userIds, type) {
+    if (!type) return userIds;
+
+    try {
+      const prefs = await prisma.userPreference.findMany({
+        where: { userId: { in: userIds } },
+        select: { userId: true, notificationPreferences: true },
+      });
+
+      const prefsMap = {};
+      prefs.forEach((p) => {
+        prefsMap[p.userId] = p.notificationPreferences;
+      });
+
+      const typeKey = String(type).toLowerCase();
+
+      return userIds.filter((userId) => {
+        const np = prefsMap[userId];
+        if (!np) return true;
+        return np[typeKey] !== false;
+      });
+    } catch (e) {
+      return userIds;
+    }
   }
 
   // ============================================
@@ -293,17 +422,36 @@ class NotificationService {
     const where = { isActive: true, deletedAt: null };
     if (role) where.role = role;
 
-    const users = await prisma.user.findMany({
-      where,
-      select: { id: true },
-    });
+    // ⭐ Use cursor pagination to avoid loading all users
+    const users = [];
+    let cursor = null;
+    const PAGE_SIZE = 1000;
 
-    const userIds = users.map((u) => u.id);
-    return this.sendToMultipleUsers(userIds, data);
+    while (true) {
+      const batch = await prisma.user.findMany({
+        where,
+        select: { id: true },
+        take: PAGE_SIZE,
+        ...(cursor ? { skip: 1, cursor: { id: cursor } } : {}),
+        orderBy: { id: 'asc' },
+      });
+
+      if (batch.length === 0) break;
+
+      users.push(...batch.map((u) => u.id));
+      cursor = batch[batch.length - 1].id;
+
+      if (batch.length < PAGE_SIZE) break;
+    }
+
+    logInfo(`Broadcasting to ${users.length} users`);
+
+    return this.sendToMultipleUsers(users, data);
   }
 
   // ============================================
-  // 11. Chat Notification Helper
+  // 11-19. Helper notification methods
+  // (Same as before, just keep them)
   // ============================================
   static async sendChatNotification(senderId, receiverId, message) {
     const sender = await prisma.user.findUnique({
@@ -330,9 +478,6 @@ class NotificationService {
     });
   }
 
-  // ============================================
-  // 12. Call Notification Helper
-  // ============================================
   static async sendCallNotification(callerId, receiverId, type) {
     const caller = await prisma.user.findUnique({
       where: { id: callerId },
@@ -354,9 +499,6 @@ class NotificationService {
     });
   }
 
-  // ============================================
-  // 13. Coin Notification Helper
-  // ============================================
   static async sendCoinNotification(userId, amount, type, description = null) {
     return this.createNotification(userId, {
       type: 'COIN',
@@ -369,9 +511,6 @@ class NotificationService {
     });
   }
 
-  // ============================================
-  // 14. Reward Notification Helper
-  // ============================================
   static async sendRewardNotification(userId, reward, reason = null) {
     return this.createNotification(userId, {
       type: 'REWARD',
@@ -384,9 +523,6 @@ class NotificationService {
     });
   }
 
-  // ============================================
-  // 15. Promo Notification Helper
-  // ============================================
   static async sendPromoNotification(userId, promo) {
     return this.createNotification(userId, {
       type: 'PROMO',
@@ -400,9 +536,6 @@ class NotificationService {
     });
   }
 
-  // ============================================
-  // 16. Girl Request Notification
-  // ============================================
   static async sendGirlRequestNotification(userId, status, reason = null) {
     const titles = {
       APPROVED: '🎉 Approved!',
@@ -425,9 +558,6 @@ class NotificationService {
     });
   }
 
-  // ============================================
-  // 17. Gift Notification Helper
-  // ============================================
   static async sendGiftNotification(receiverId, senderId, gift, isAnonymous = false) {
     let senderName = 'Someone';
     let senderImage = null;
@@ -457,9 +587,6 @@ class NotificationService {
     });
   }
 
-  // ============================================
-  // 18. Withdrawal Notification Helper
-  // ============================================
   static async sendWithdrawalNotification(userId, amount, status, reason = null) {
     const statusMap = {
       APPROVED: { title: '✅ Withdrawal Approved' },
@@ -485,9 +612,6 @@ class NotificationService {
     });
   }
 
-  // ============================================
-  // 19. Subscription Notification Helper
-  // ============================================
   static async sendSubscriptionNotification(userId, plan, status = 'ACTIVATED') {
     const titles = {
       ACTIVATED: '👑 Subscription Activated',
@@ -519,7 +643,7 @@ class NotificationService {
           <style>
             body { font-family: Arial, sans-serif; background: #f5f5f5; margin: 0; padding: 20px; }
             .container { max-width: 600px; margin: 0 auto; background: white; border-radius: 12px; overflow: hidden; }
-            .header { background: linear-gradient(135deg, #E11D48, #7C3AED); padding: 30px; text-align: center; }
+            .header { background: linear-gradient(135deg, #4C1D95, #7C3AED); padding: 30px; text-align: center; }
             .header h1 { color: white; margin: 0; font-size: 24px; }
             .content { padding: 30px; }
             .content h2 { color: #0F172A; margin-top: 0; }
@@ -543,6 +667,271 @@ class NotificationService {
         </body>
       </html>
     `;
+  }
+    // ============================================
+  // ⭐ SCHEDULE NOTIFICATION (NEW)
+  // ============================================
+  static async scheduleNotification(adminId, data) {
+    const {
+      userIds,
+      role,
+      title,
+      body,
+      image,
+      data: extraData,
+      action,
+      actionData,
+      priority = 'NORMAL',
+      channel = 'BOTH',
+      type = 'SYSTEM',
+      scheduledAt,
+    } = data;
+
+    if (!title || !body) {
+      throw AppError.badRequest('Title and body are required');
+    }
+
+    if (!scheduledAt) {
+      throw AppError.badRequest('scheduledAt is required');
+    }
+
+    const scheduledDate = new Date(scheduledAt);
+
+    if (scheduledDate <= new Date()) {
+      throw AppError.badRequest('scheduledAt must be in the future');
+    }
+
+    // Save scheduled notification
+    const scheduled = await prisma.scheduledNotification.create({
+      data: {
+        adminId,
+        userIds: userIds || [],
+        role: role || null,
+        title,
+        body,
+        image: image || null,
+        data: extraData || {},
+        action: action || null,
+        actionData: actionData || {},
+        priority,
+        channel,
+        type,
+        scheduledAt: scheduledDate,
+        status: 'PENDING',
+      },
+    });
+
+    logInfo(
+      `Notification scheduled by admin ${adminId} for ${scheduledDate.toISOString()} (${userIds?.length || 0} users, role: ${role || 'all'})`
+    );
+
+    return scheduled;
+  }
+
+  // ============================================
+  // ⭐ GET SCHEDULED NOTIFICATIONS (NEW)
+  // ============================================
+  static async getScheduledNotifications({ page = 1, limit = 20, status } = {}) {
+    const where = {};
+    if (status) where.status = status;
+
+    const skip = (page - 1) * limit;
+
+    const [notifications, total] = await Promise.all([
+      prisma.scheduledNotification.findMany({
+        where,
+        orderBy: { scheduledAt: 'desc' },
+        skip,
+        take: limit,
+      }),
+      prisma.scheduledNotification.count({ where }),
+    ]);
+
+    return {
+      data: notifications,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
+    };
+  }
+
+  // ============================================
+  // ⭐ CANCEL SCHEDULED NOTIFICATION (NEW)
+  // ============================================
+  static async cancelScheduledNotification(id, adminId) {
+    const notification = await prisma.scheduledNotification.findUnique({
+      where: { id },
+    });
+
+    if (!notification) throw AppError.notFound('Scheduled notification not found');
+    if (notification.status !== 'PENDING') {
+      throw AppError.badRequest(`Cannot cancel notification with status: ${notification.status}`);
+    }
+
+    const updated = await prisma.scheduledNotification.update({
+      where: { id },
+      data: {
+        status: 'CANCELLED',
+        cancelledAt: new Date(),
+      },
+    });
+
+    logInfo(`Scheduled notification cancelled: ${id} by admin ${adminId}`);
+    return updated;
+  }
+
+  // ============================================
+  // ⭐ GET NOTIFICATION HISTORY (NEW)
+  // ============================================
+  static async getNotificationHistory({ page = 1, limit = 20, type, status } = {}) {
+    const where = {};
+    if (type) where.type = type;
+    if (status) where.status = status;
+
+    const skip = (page - 1) * limit;
+
+    const [history, total] = await Promise.all([
+      prisma.notificationHistory.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: limit,
+      }),
+      prisma.notificationHistory.count({ where }),
+    ]);
+
+    return {
+      data: history,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
+    };
+  }
+
+  // ============================================
+  // ⭐ RECORD NOTIFICATION HISTORY (helper)
+  // ============================================
+  static async recordHistory(data) {
+    try {
+      return await prisma.notificationHistory.create({
+        data: {
+          title: data.title,
+          body: data.body,
+          type: data.type || 'SYSTEM',
+          channel: data.channel || 'IN_APP',
+          recipientCount: data.recipientCount || 0,
+          sentCount: data.sentCount || 0,
+          failedCount: data.failedCount || 0,
+          status: data.status || 'SENT',
+          sentBy: data.sentBy || null,
+          role: data.role || null,
+          metadata: data.metadata || {},
+        },
+      });
+    } catch (e) {
+      logError('Failed to record notification history', e);
+      return null;
+    }
+  }
+
+  // ============================================
+  // ⭐ SEND SCHEDULED NOTIFICATION (called by cron)
+  // ============================================
+  static async sendScheduledNotification(scheduledId) {
+    const scheduled = await prisma.scheduledNotification.findUnique({
+      where: { id: scheduledId },
+    });
+
+    if (!scheduled) throw AppError.notFound('Scheduled notification not found');
+    if (scheduled.status !== 'PENDING') {
+      return { skipped: true, reason: `Status is ${scheduled.status}` };
+    }
+
+    try {
+      let result;
+
+      // Send based on mode
+      if (scheduled.userIds && scheduled.userIds.length > 0) {
+        // Direct user list
+        result = await this.sendToMultipleUsers(scheduled.userIds, {
+          type: scheduled.type,
+          title: scheduled.title,
+          body: scheduled.body,
+          image: scheduled.image,
+          data: scheduled.data,
+          action: scheduled.action,
+          actionData: scheduled.actionData,
+          priority: scheduled.priority,
+          channel: scheduled.channel,
+        });
+      } else {
+        // Broadcast (optionally filtered by role)
+        result = await this.broadcastToAllUsers(
+          {
+            type: scheduled.type,
+            title: scheduled.title,
+            body: scheduled.body,
+            image: scheduled.image,
+            data: scheduled.data,
+            action: scheduled.action,
+            actionData: scheduled.actionData,
+            priority: scheduled.priority,
+            channel: scheduled.channel,
+          },
+          scheduled.role
+        );
+      }
+
+      // Mark as sent
+      await prisma.scheduledNotification.update({
+        where: { id: scheduledId },
+        data: {
+          status: 'SENT',
+          sentAt: new Date(),
+          recipientCount: result.total || 0,
+          sentCount: result.sent || 0,
+          failedCount: result.failed || 0,
+        },
+      });
+
+      // Record history
+      await this.recordHistory({
+        title: scheduled.title,
+        body: scheduled.body,
+        type: scheduled.type,
+        channel: scheduled.channel,
+        recipientCount: result.total || 0,
+        sentCount: result.sent || 0,
+        failedCount: result.failed || 0,
+        status: 'SENT',
+        sentBy: scheduled.adminId,
+        role: scheduled.role,
+        metadata: {
+          scheduledId: scheduled.id,
+        },
+      });
+
+      logInfo(`Scheduled notification sent: ${scheduledId}`);
+      return { success: true, result };
+    } catch (error) {
+      // Mark as failed
+      await prisma.scheduledNotification.update({
+        where: { id: scheduledId },
+        data: {
+          status: 'FAILED',
+          failureReason: error.message,
+        },
+      });
+
+      logError(`Scheduled notification failed: ${scheduledId}`, error);
+      throw error;
+    }
   }
 }
 

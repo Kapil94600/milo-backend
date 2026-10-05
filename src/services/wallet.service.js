@@ -1,5 +1,5 @@
 // ============================================
-// Wallet Service — Complete with Safe Transactions
+// Wallet Service — Bond (Complete + Fixed)
 // ============================================
 
 const { prisma } = require('../config/database');
@@ -156,7 +156,6 @@ class WalletService {
 
     logInfo(`+${coins} coins to ${userId} (${category})`);
 
-    // Notification for specific categories
     const notifyCategories = [
       'SIGNUP_BONUS',
       'REFERRAL_BONUS',
@@ -180,13 +179,12 @@ class WalletService {
   }
 
   // ============================================
-  // 5. DEDUCT COINS (atomic — critical fix)
+  // 5. DEDUCT COINS (atomic)
   // ============================================
   static async deductCoins(userId, coins, category, description, metadata = null) {
     if (coins <= 0) throw AppError.badRequest('Coins must be positive');
 
     const result = await prisma.$transaction(async (tx) => {
-      // ⭐ ATOMIC check + deduct (prevents negative balance)
       const updated = await tx.wallet.updateMany({
         where: {
           userId,
@@ -588,7 +586,6 @@ class WalletService {
     const netAmount = amount - fee;
 
     const result = await prisma.$transaction(async (tx) => {
-      // Atomic check + deduct
       const updated = await tx.wallet.updateMany({
         where: { userId, balance: { gte: amount } },
         data: {
@@ -689,7 +686,7 @@ class WalletService {
   }
 
   // ============================================
-  // 20. ADMIN — Process Withdrawal
+  // 20. ADMIN — Process Withdrawal (COMPLETE FLOW)
   // ============================================
   static async processWithdrawal(
     withdrawalId,
@@ -697,6 +694,9 @@ class WalletService {
     adminId,
     failureReason = null
   ) {
+    // ============================================
+    // Validate status
+    // ============================================
     if (!['APPROVED', 'REJECTED', 'COMPLETED'].includes(status)) {
       throw AppError.badRequest('Invalid status');
     }
@@ -707,21 +707,52 @@ class WalletService {
     });
     if (!withdrawal) throw AppError.notFound('Withdrawal not found');
 
-    if (withdrawal.status === 'COMPLETED' || withdrawal.status === 'REJECTED') {
-      throw AppError.badRequest('Withdrawal already processed');
+    // ============================================
+    // Terminal states — cannot change
+    // ============================================
+    if (withdrawal.status === 'COMPLETED') {
+      throw AppError.badRequest('Withdrawal already completed');
+    }
+    if (withdrawal.status === 'REJECTED') {
+      throw AppError.badRequest('Withdrawal already rejected');
     }
 
+    // ============================================
+    // State transition validation
+    // ============================================
+    // PENDING → APPROVED / REJECTED / COMPLETED
+    // APPROVED → COMPLETED / REJECTED
+    // ============================================
+
+    const currentStatus = withdrawal.status;
+
+    if (currentStatus === 'PENDING') {
+      // Any of APPROVED / REJECTED / COMPLETED allowed
+    } else if (currentStatus === 'APPROVED') {
+      if (status === 'APPROVED') {
+        throw AppError.badRequest('Withdrawal already approved');
+      }
+      // COMPLETED or REJECTED allowed
+    }
+
+    // ============================================
+    // Process in transaction
+    // ============================================
     const result = await prisma.$transaction(async (tx) => {
+      // Update withdrawal record
       const updated = await tx.withdrawal.update({
         where: { id: withdrawalId },
         data: {
           status,
           processedBy: adminId,
           processedAt: new Date(),
-          failureReason,
+          failureReason: status === 'REJECTED' ? failureReason : null,
         },
       });
 
+      // ═══════════════════════════════════════
+      // COMPLETED → Release pending, add to withdrawn
+      // ═══════════════════════════════════════
       if (status === 'COMPLETED') {
         await tx.wallet.update({
           where: { userId: withdrawal.userId },
@@ -731,11 +762,20 @@ class WalletService {
           },
         });
 
+        // Update the original transaction
         await tx.transaction.updateMany({
-          where: { referenceId: withdrawal.id, referenceModel: 'Withdrawal' },
+          where: {
+            referenceId: withdrawal.id,
+            referenceModel: 'Withdrawal',
+          },
           data: { status: 'COMPLETED' },
         });
-      } else if (status === 'REJECTED') {
+      }
+
+      // ═══════════════════════════════════════
+      // REJECTED → Refund to balance, clear pending
+      // ═══════════════════════════════════════
+      else if (status === 'REJECTED') {
         await tx.wallet.update({
           where: { userId: withdrawal.userId },
           data: {
@@ -744,16 +784,30 @@ class WalletService {
           },
         });
 
+        // Mark original transaction as FAILED
         await tx.transaction.updateMany({
-          where: { referenceId: withdrawal.id, referenceModel: 'Withdrawal' },
-          data: { status: 'FAILED', failureReason },
+          where: {
+            referenceId: withdrawal.id,
+            referenceModel: 'Withdrawal',
+          },
+          data: {
+            status: 'FAILED',
+            failureReason: failureReason || 'Rejected by admin',
+          },
         });
       }
+
+      // ═══════════════════════════════════════
+      // APPROVED → No wallet change
+      // Money stays in pendingBalance until COMPLETED
+      // ═══════════════════════════════════════
 
       return updated;
     });
 
+    // ============================================
     // Send notification
+    // ============================================
     try {
       await NotificationService.sendWithdrawalNotification(
         withdrawal.userId,
@@ -769,7 +823,7 @@ class WalletService {
       logError('Withdrawal notify failed', e);
     }
 
-    logInfo(`Withdrawal ${withdrawalId} → ${status}`);
+    logInfo(`Withdrawal ${withdrawalId} → ${status} by admin ${adminId}`);
     return result;
   }
 
@@ -797,6 +851,249 @@ class WalletService {
       totalPaidOut: totalAmount._sum.netAmount || 0,
       totalFees: totalAmount._sum.fee || 0,
     };
+  }
+    // ============================================
+  // ⭐ REFUND WORKFLOW (NEW)
+  // ============================================
+
+  /**
+   * Refund coins to user
+   */
+  static async refundCoins(
+    userId,
+    coins,
+    reason,
+    metadata = null
+  ) {
+    if (coins <= 0) throw AppError.badRequest('Refund amount must be positive');
+    if (!reason) throw AppError.badRequest('Refund reason is required');
+
+    const result = await prisma.$transaction(async (tx) => {
+      let wallet = await tx.wallet.findUnique({ where: { userId } });
+      if (!wallet) {
+        wallet = await tx.wallet.create({
+          data: { userId, balance: 0, coins: 0 },
+        });
+      }
+
+      const updated = await tx.wallet.update({
+        where: { userId },
+        data: {
+          coins: { increment: coins },
+          totalEarned: { increment: coins },
+        },
+      });
+
+      await tx.user.update({
+        where: { id: userId },
+        data: { totalCoins: { increment: coins } },
+      });
+
+      await tx.transaction.create({
+        data: {
+          userId,
+          type: 'CREDIT',
+          category: 'REFUND',
+          amount: 0,
+          coins,
+          description: reason,
+          status: 'COMPLETED',
+          balanceAfter: updated.balance,
+          coinsAfter: updated.coins,
+          referenceId: metadata?.referenceId || null,
+          referenceModel: metadata?.referenceModel || null,
+          gatewayResponse: metadata || null,
+        },
+      });
+
+      return updated;
+    });
+
+    logInfo(`Refund: +${coins} coins to ${userId} (${reason})`);
+
+    NotificationService.sendCoinNotification(
+      userId,
+      coins,
+      'CREDIT',
+      `Refund: ${reason}`
+    ).catch(() => {});
+
+    return result;
+  }
+
+  /**
+   * Refund money to user
+   */
+  static async refundMoney(
+    userId,
+    amount,
+    reason,
+    metadata = null
+  ) {
+    if (amount <= 0) throw AppError.badRequest('Refund amount must be positive');
+    if (!reason) throw AppError.badRequest('Refund reason is required');
+
+    const result = await prisma.$transaction(async (tx) => {
+      let wallet = await tx.wallet.findUnique({ where: { userId } });
+      if (!wallet) {
+        wallet = await tx.wallet.create({
+          data: { userId, balance: 0, coins: 0 },
+        });
+      }
+
+      const updated = await tx.wallet.update({
+        where: { userId },
+        data: {
+          balance: { increment: amount },
+          totalEarned: { increment: amount },
+        },
+      });
+
+      await tx.transaction.create({
+        data: {
+          userId,
+          type: 'CREDIT',
+          category: 'REFUND',
+          amount,
+          coins: 0,
+          description: reason,
+          status: 'COMPLETED',
+          balanceAfter: updated.balance,
+          coinsAfter: updated.coins,
+          referenceId: metadata?.referenceId || null,
+          referenceModel: metadata?.referenceModel || null,
+          gatewayResponse: metadata || null,
+        },
+      });
+
+      return updated;
+    });
+
+    logInfo(`Refund: +₹${amount} to ${userId} (${reason})`);
+
+    return result;
+  }
+
+  /**
+   * ⭐ ADMIN — Process refund for a failed transaction
+   */
+  static async processRefund(
+    transactionId,
+    adminId,
+    reason = 'Admin refund'
+  ) {
+    const transaction = await prisma.transaction.findUnique({
+      where: { id: transactionId },
+      include: { user: true },
+    });
+
+    if (!transaction) throw AppError.notFound('Transaction not found');
+
+    if (transaction.status === 'REFUNDED') {
+      throw AppError.badRequest('Transaction already refunded');
+    }
+
+    if (transaction.status === 'COMPLETED') {
+      throw AppError.badRequest(
+        'Cannot refund completed transaction — use manual adjustment'
+      );
+    }
+
+    if (transaction.type !== 'DEBIT' && transaction.type !== 'CREDIT') {
+      throw AppError.badRequest('Only debit/credit can be refunded');
+    }
+
+    const result = await prisma.$transaction(async (tx) => {
+      // Update transaction status
+      await tx.transaction.update({
+        where: { id: transactionId },
+        data: {
+          status: 'REFUNDED',
+          failureReason: reason,
+        },
+      });
+
+      // ⭐ Refund coins if it was a debit
+      if (transaction.type === 'DEBIT' && transaction.coins > 0) {
+        const wallet = await tx.wallet.findUnique({
+          where: { userId: transaction.userId },
+        });
+
+        const updated = await tx.wallet.update({
+          where: { userId: transaction.userId },
+          data: {
+            coins: { increment: transaction.coins },
+          },
+        });
+
+        await tx.transaction.create({
+          data: {
+            userId: transaction.userId,
+            type: 'CREDIT',
+            category: 'REFUND',
+            amount: 0,
+            coins: transaction.coins,
+            description: `Refund: ${reason}`,
+            status: 'COMPLETED',
+            balanceAfter: updated.balance,
+            coinsAfter: updated.coins,
+            referenceId: transaction.id,
+            referenceModel: 'Transaction',
+          },
+        });
+      }
+
+      // ⭐ Refund money if it was a debit
+      if (transaction.type === 'DEBIT' && transaction.amount > 0) {
+        const updated = await tx.wallet.update({
+          where: { userId: transaction.userId },
+          data: {
+            balance: { increment: transaction.amount },
+          },
+        });
+
+        await tx.transaction.create({
+          data: {
+            userId: transaction.userId,
+            type: 'CREDIT',
+            category: 'REFUND',
+            amount: transaction.amount,
+            coins: 0,
+            description: `Refund: ${reason}`,
+            status: 'COMPLETED',
+            balanceAfter: updated.balance,
+            coinsAfter: updated.coins,
+            referenceId: transaction.id,
+            referenceModel: 'Transaction',
+          },
+        });
+      }
+
+      return { transaction, refundedBy: adminId, reason };
+    });
+
+    // Notify user
+    try {
+      await NotificationService.createNotification(transaction.userId, {
+        type: 'COIN',
+        title: '💰 Refund Processed',
+        body: `Your refund of ${
+          transaction.coins > 0
+            ? `${transaction.coins} coins`
+            : `₹${transaction.amount}`
+        } has been processed.`,
+        data: { transactionId },
+        action: 'OPEN_WALLET',
+        channel: 'BOTH',
+        priority: 'HIGH',
+      });
+    } catch (e) {}
+
+    logInfo(
+      `Refund processed for transaction ${transactionId} by admin ${adminId}`
+    );
+
+    return result;
   }
 }
 

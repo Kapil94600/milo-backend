@@ -1,5 +1,5 @@
 // ============================================
-// Express App Configuration
+// Express App Configuration — Bond
 // ============================================
 
 const express = require('express');
@@ -7,7 +7,6 @@ const cors = require('cors');
 const helmet = require('helmet');
 const morgan = require('morgan');
 const compression = require('compression');
-const mongoSanitize = require('express-mongo-sanitize');
 const path = require('path');
 
 const config = require('./config');
@@ -17,6 +16,8 @@ const errorHandler = require('./middleware/errorHandler');
 const { notFoundHandler } = require('./middleware/errorHandler');
 const checkMaintenance = require('./middleware/maintenance');
 const { autoAudit } = require('./middleware/auditLog');
+const { auditAdminAction } = require('./middleware/auditAdmin');
+const { authenticate, requireAdmin } = require('./middleware/auth');
 const setupSwagger = require('./docs/swagger');
 
 // ============================================
@@ -51,39 +52,53 @@ const maintenanceRoutes = require('./routes/maintenance.route');
 // ============================================
 const app = express();
 
-// Trust proxy (for rate limiting + IP)
+// Trust proxy (for rate limiting + correct IP behind proxy)
 app.set('trust proxy', 1);
 
 // Disable ETag (avoid caching issues with API)
 app.set('etag', false);
 
 // ============================================
-// Security
+// Security Headers
 // ============================================
 app.use(
   helmet({
     contentSecurityPolicy: false,
     crossOriginEmbedderPolicy: false,
-    crossOriginResourcePolicy: { policy: 'cross-origin' }, // ✅ ADD THIS
-    crossOriginOpenerPolicy: false, // ✅ ADD THIS
+    crossOriginResourcePolicy: { policy: 'cross-origin' },
+    crossOriginOpenerPolicy: false,
   })
 );
-// After helmet middleware
+
+// Extra CORP header for static assets
 app.use((req, res, next) => {
   res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
   next();
 });
+
 // ============================================
 // CORS
 // ============================================
 app.use(
   cors({
     origin: (origin, callback) => {
+      // Allow requests with no origin (mobile apps, curl)
       if (!origin) return callback(null, true);
-      if (config.CORS_ORIGIN.includes('*') || config.CORS_ORIGIN.includes(origin)) {
+
+      // Wildcard allowed only in dev (config already validates in prod)
+      if (config.CORS_ORIGIN.includes('*')) {
         return callback(null, true);
       }
-      if (!config.IS_PRODUCTION) return callback(null, true);
+
+      if (config.CORS_ORIGIN.includes(origin)) {
+        return callback(null, true);
+      }
+
+      // Allow all in development
+      if (!config.IS_PRODUCTION) {
+        return callback(null, true);
+      }
+
       return callback(new Error('CORS: Origin not allowed'), false);
     },
     credentials: true,
@@ -97,7 +112,7 @@ app.use(
 app.use(compression());
 
 // ============================================
-// Razorpay webhook — RAW BODY (before express.json)
+// Razorpay webhook — RAW BODY (must be before express.json)
 // ============================================
 app.use(
   `${config.API_PREFIX}/payments/webhook`,
@@ -107,13 +122,20 @@ app.use(
 // ============================================
 // Body parsers
 // ============================================
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+app.use(express.json({ limit: '5mb' }));
+app.use(express.urlencoded({ extended: true, limit: '5mb' }));
 
 // ============================================
-// Sanitize
+// Sanitize (only for JSON body — PostgreSQL safe)
 // ============================================
-app.use(mongoSanitize());
+// Note: express-mongo-sanitize is for MongoDB — no effect on PostgreSQL
+// But it's harmless and sanitizes req.body/query/params
+try {
+  const mongoSanitize = require('express-mongo-sanitize');
+  app.use(mongoSanitize());
+} catch (e) {
+  // skip if not installed
+}
 
 // ============================================
 // Logging
@@ -132,12 +154,27 @@ if (config.IS_PRODUCTION) {
 // ============================================
 // Static files
 // ============================================
-app.use('/uploads', express.static(path.resolve(process.cwd(), config.UPLOAD_DIR)));
+app.use(
+  '/uploads',
+  express.static(path.resolve(process.cwd(), config.UPLOAD_DIR), {
+    maxAge: '7d',
+    etag: true,
+  })
+);
 
 // ============================================
 // Health check
 // ============================================
-app.get('/health', (req, res) => {
+app.get('/health', async (req, res) => {
+  let dbStatus = 'unknown';
+  try {
+    const { checkDatabaseHealth } = require('./config/database');
+    const healthy = await checkDatabaseHealth();
+    dbStatus = healthy ? 'connected' : 'disconnected';
+  } catch (e) {
+    dbStatus = 'error';
+  }
+
   ApiResponse.success(
     res,
     {
@@ -145,6 +182,7 @@ app.get('/health', (req, res) => {
       uptime: process.uptime(),
       environment: config.NODE_ENV,
       timestamp: new Date().toISOString(),
+      database: dbStatus,
       memory: {
         used: Math.round(process.memoryUsage().heapUsed / 1024 / 1024) + 'MB',
         total: Math.round(process.memoryUsage().heapTotal / 1024 / 1024) + 'MB',
@@ -160,7 +198,8 @@ app.get('/health', (req, res) => {
 app.use(checkMaintenance);
 
 // ============================================
-// Auto audit (POST/PUT/PATCH/DELETE)
+// Auto audit (POST/PUT/PATCH/DELETE — non-admin)
+// Admin audit is handled separately on admin routes
 // ============================================
 app.use(autoAudit);
 
@@ -197,6 +236,7 @@ app.get(config.API_PREFIX, (req, res) => {
         appVersions: `${config.API_PREFIX}/app-versions`,
         auditLogs: `${config.API_PREFIX}/audit-logs`,
         payments: `${config.API_PREFIX}/payments`,
+        maintenance: `${config.API_PREFIX}/maintenance`,
       },
     },
     `Welcome to ${config.APP_NAME} API`
@@ -206,7 +246,11 @@ app.get(config.API_PREFIX, (req, res) => {
 // ============================================
 // API Routes
 // ============================================
+
+// Public routes
 app.use(`${config.API_PREFIX}/auth`, authRoutes);
+
+// Authenticated routes
 app.use(`${config.API_PREFIX}/users`, userRoutes);
 app.use(`${config.API_PREFIX}/girls`, girlRoutes);
 app.use(`${config.API_PREFIX}/wallet`, walletRoutes);
@@ -219,16 +263,31 @@ app.use(`${config.API_PREFIX}/referrals`, referralRoutes);
 app.use(`${config.API_PREFIX}/reports`, reportRoutes);
 app.use(`${config.API_PREFIX}/support`, supportRoutes);
 app.use(`${config.API_PREFIX}/notifications`, notificationRoutes);
-app.use(`${config.API_PREFIX}/admin`, adminRoutes);
 app.use(`${config.API_PREFIX}/upload`, uploadRoutes);
 app.use(`${config.API_PREFIX}/blocks`, blockRoutes);
 app.use(`${config.API_PREFIX}/favorites`, favoriteRoutes);
 app.use(`${config.API_PREFIX}/reviews`, reviewRoutes);
 app.use(`${config.API_PREFIX}/banners`, bannerRoutes);
 app.use(`${config.API_PREFIX}/app-versions`, appVersionRoutes);
-app.use(`${config.API_PREFIX}/audit-logs`, auditRoutes);
 app.use(`${config.API_PREFIX}/payments`, paymentRoutes);
 app.use(`${config.API_PREFIX}/maintenance`, maintenanceRoutes);
+
+// ⭐ ADMIN routes — with admin audit trail
+app.use(
+  `${config.API_PREFIX}/admin`,
+  authenticate,
+  requireAdmin,
+  auditAdminAction,
+  adminRoutes
+);
+
+// ⭐ Admin audit logs viewer
+app.use(
+  `${config.API_PREFIX}/audit-logs`,
+  authenticate,
+  requireAdmin,
+  auditRoutes
+);
 
 // ============================================
 // Swagger
@@ -236,12 +295,12 @@ app.use(`${config.API_PREFIX}/maintenance`, maintenanceRoutes);
 setupSwagger(app);
 
 // ============================================
-// 404
+// 404 handler
 // ============================================
 app.use(notFoundHandler);
 
 // ============================================
-// Error handler (LAST)
+// Global error handler (LAST)
 // ============================================
 app.use(errorHandler);
 

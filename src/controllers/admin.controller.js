@@ -1,5 +1,5 @@
 // ============================================
-// Admin Controller — Complete with Rate Management
+// Admin Controller — Bond (Complete)
 // ============================================
 
 const asyncHandler = require('../utils/asyncHandler');
@@ -45,6 +45,21 @@ const getTopUsers = asyncHandler(async (req, res) => {
 });
 
 // ============================================
+// ⭐ CHARTS (NEW)
+// ============================================
+const getRevenueChart = asyncHandler(async (req, res) => {
+  const { days = 30 } = req.query;
+  const data = await AdminService.getRevenueChart(parseInt(days) || 30);
+  return ApiResponse.success(res, data, 'Revenue chart data');
+});
+
+const getCallsChart = asyncHandler(async (req, res) => {
+  const { days = 30 } = req.query;
+  const data = await AdminService.getCallsChart(parseInt(days) || 30);
+  return ApiResponse.success(res, data, 'Calls chart data');
+});
+
+// ============================================
 // USERS
 // ============================================
 const getUsers = asyncHandler(async (req, res) => {
@@ -62,6 +77,12 @@ const getUsers = asyncHandler(async (req, res) => {
 const getUserDetail = asyncHandler(async (req, res) => {
   const user = await AdminService.getUserDetail(req.params.id);
   return ApiResponse.success(res, user, 'User detail');
+});
+
+// ⭐ User Activity Timeline (NEW)
+const getUserActivity = asyncHandler(async (req, res) => {
+  const data = await AdminService.getUserActivity(req.params.id);
+  return ApiResponse.success(res, data, 'User activity fetched');
 });
 
 const updateUserStatus = asyncHandler(async (req, res) => {
@@ -115,8 +136,15 @@ const deleteGirl = asyncHandler(async (req, res) => {
   return ApiResponse.success(res, result, 'Girl deleted');
 });
 
+// ⭐ Run Girl Auto-Payout (NEW)
+const runGirlAutoPayout = asyncHandler(async (req, res) => {
+  const GirlService = require('../services/girl.service');
+  const result = await GirlService.runAutoPayout();
+  return ApiResponse.success(res, result, 'Auto-payout completed');
+});
+
 // ============================================
-// ⭐ RATE MANAGEMENT (NEW)
+// ⭐ RATE MANAGEMENT
 // ============================================
 const getPendingRateChanges = asyncHandler(async (req, res) => {
   const { page, limit } = req.query;
@@ -152,6 +180,19 @@ const getGlobalRates = asyncHandler(async (req, res) => {
 });
 
 // ============================================
+// ⭐ PAYOUT RATES (NEW)
+// ============================================
+const getPayoutRates = asyncHandler(async (req, res) => {
+  const rates = await AdminService.getPayoutRates();
+  return ApiResponse.success(res, rates, 'Payout rates fetched');
+});
+
+const updatePayoutRates = asyncHandler(async (req, res) => {
+  const rates = await AdminService.updatePayoutRates(req.body);
+  return ApiResponse.success(res, rates, 'Payout rates updated');
+});
+
+// ============================================
 // WALLET
 // ============================================
 const getWalletStats = asyncHandler(async (req, res) => {
@@ -179,6 +220,20 @@ const getWithdrawals = asyncHandler(async (req, res) => {
     status,
   });
   return ApiResponse.success(res, result, 'Withdrawals fetched');
+});
+
+// ⭐ Process Refund (NEW)
+const processRefund = asyncHandler(async (req, res) => {
+  const { transactionId, reason } = req.body;
+
+  const WalletService = require('../services/wallet.service');
+  const result = await WalletService.processRefund(
+    transactionId,
+    req.user.id,
+    reason
+  );
+
+  return ApiResponse.success(res, result, 'Refund processed');
 });
 
 // ============================================
@@ -250,7 +305,84 @@ const getAnalytics = asyncHandler(async (req, res) => {
   const analytics = await AdminService.getAnalytics(startDate, endDate);
   return ApiResponse.success(res, analytics, 'Analytics fetched');
 });
+// ============================================
+// ⭐ ANALYTICS (NEW)
+// ============================================
+const getGiftAnalytics = asyncHandler(async (req, res) => {
+  const { days = 30 } = req.query;
+  const data = await AdminService.getGiftAnalytics({ days: parseInt(days) || 30 });
+  return ApiResponse.success(res, data, 'Gift analytics fetched');
+});
 
+const getSubscriptionAnalytics = asyncHandler(async (req, res) => {
+  const { days = 30 } = req.query;
+  const data = await AdminService.getSubscriptionAnalytics({ days: parseInt(days) || 30 });
+  return ApiResponse.success(res, data, 'Subscription analytics fetched');
+});
+
+const getReportAnalytics = asyncHandler(async (req, res) => {
+  const { days = 30 } = req.query;
+  const data = await AdminService.getReportAnalytics({ days: parseInt(days) || 30 });
+  return ApiResponse.success(res, data, 'Report analytics fetched');
+});
+
+const getSupportAnalytics = asyncHandler(async (req, res) => {
+  const { days = 30 } = req.query;
+  const data = await AdminService.getSupportAnalytics({ days: parseInt(days) || 30 });
+  return ApiResponse.success(res, data, 'Support analytics fetched');
+});
+
+// ============================================
+// ⭐ BULK ACTIONS (NEW)
+// ============================================
+const bulkBlockUsers = asyncHandler(async (req, res) => {
+  const { userIds, reason } = req.body;
+  const result = await AdminService.bulkBlockUsers(userIds, reason);
+  return ApiResponse.success(res, result, `${result.count} users blocked`);
+});
+
+const bulkUnblockUsers = asyncHandler(async (req, res) => {
+  const { userIds } = req.body;
+  const result = await AdminService.bulkUnblockUsers(userIds);
+  return ApiResponse.success(res, result, `${result.count} users unblocked`);
+});
+
+const bulkDeleteUsers = asyncHandler(async (req, res) => {
+  const { userIds } = req.body;
+  const result = await AdminService.bulkDeleteUsers(userIds);
+  return ApiResponse.success(res, result, `${result.count} users deleted`);
+});
+// ============================================
+// ⭐ GENDER CHART + ADMIN ROLES (NEW)
+// ============================================
+const getGenderChart = asyncHandler(async (req, res) => {
+  const data = await AdminService.getGenderChart();
+  return ApiResponse.success(res, data, 'Gender chart data');
+});
+
+const createSubAdmin = asyncHandler(async (req, res) => {
+  const data = await AdminService.createSubAdmin(req.user.id, req.body);
+  return ApiResponse.created(res, data, 'Sub-admin created');
+});
+
+const getAdminPermissions = asyncHandler(async (req, res) => {
+  const data = await AdminService.getAdminPermissions(req.user.id);
+  return ApiResponse.success(res, data, 'Admin permissions fetched');
+});
+
+const updateSubAdminPermissions = asyncHandler(async (req, res) => {
+  const data = await AdminService.updateSubAdminPermissions(
+    req.user.id,
+    req.params.id,
+    req.body
+  );
+  return ApiResponse.success(res, data, 'Permissions updated');
+});
+
+const getSubAdmins = asyncHandler(async (req, res) => {
+  const data = await AdminService.getSubAdmins();
+  return ApiResponse.success(res, data, 'Sub-admins fetched');
+});
 // ============================================
 // Exports
 // ============================================
@@ -263,9 +395,14 @@ module.exports = {
   getTopGirls,
   getTopUsers,
 
+  // ⭐ Charts
+  getRevenueChart,
+  getCallsChart,
+
   // Users
   getUsers,
   getUserDetail,
+  getUserActivity, // ⭐ NEW
   updateUserStatus,
   blockUser,
   unblockUser,
@@ -276,17 +413,23 @@ module.exports = {
   verifyGirl,
   updateGirl,
   deleteGirl,
+  runGirlAutoPayout, // ⭐ NEW
 
-  // ⭐ Rate Management
+  // Rate Management
   getPendingRateChanges,
   processRateChange,
   updateGlobalRates,
   getGlobalRates,
 
+  // ⭐ Payout Rates
+  getPayoutRates,
+  updatePayoutRates,
+
   // Wallet
   getWalletStats,
   getTransactions,
   getWithdrawals,
+  processRefund, // ⭐ NEW
 
   // Settings
   getSettings,
@@ -303,4 +446,18 @@ module.exports = {
 
   // Analytics
   getAnalytics,
+   getGiftAnalytics,
+  getSubscriptionAnalytics,
+  getReportAnalytics,
+  getSupportAnalytics,
+
+  // ⭐ Bulk actions
+  bulkBlockUsers,
+  bulkUnblockUsers,
+  bulkDeleteUsers,
+    getGenderChart,
+  createSubAdmin,
+  getAdminPermissions,
+  updateSubAdminPermissions,
+  getSubAdmins,
 };

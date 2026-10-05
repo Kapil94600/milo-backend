@@ -1,5 +1,6 @@
 // ============================================
-// Auth Service — Firebase + OTP + JWT
+// Auth Service — Bond (OTP-based, no password)
+// Firebase + OTP + JWT
 // ============================================
 
 const jwt = require('jsonwebtoken');
@@ -8,7 +9,7 @@ const { prisma } = require('../config/database');
 const config = require('../config');
 const AppError = require('../utils/AppError');
 const helpers = require('../utils/helpers');
-const { logInfo, logError } = require('../utils/logger');
+const { logInfo, logError, logWarn } = require('../utils/logger');
 const {
   ROLES,
   OTP_PURPOSE,
@@ -19,6 +20,11 @@ const WalletService = require('./wallet.service');
 const SmsService = require('./sms.service');
 const EmailService = require('./email.service');
 const { verifyFirebaseToken, isFirebaseAvailable } = require('../config/firebase');
+const {
+  recordOtpFailure,
+  recordOtpRequest,
+  clearOtpAttempts,
+} = require('../middleware/loginLockout');
 
 class AuthService {
   // ============================================
@@ -31,6 +37,7 @@ class AuthService {
 
     const normalizedPhone = helpers.normalizePhone(phone);
 
+    // ⭐ Rate limit: 5 per 15 min
     const recentCount = await prisma.otp.count({
       where: {
         phone: normalizedPhone,
@@ -72,6 +79,9 @@ class AuthService {
       },
     });
 
+    // ⭐ Record OTP request (for lockout tracking)
+    await recordOtpRequest(normalizedPhone);
+
     await SmsService.sendOTP(normalizedPhone, otp);
 
     logInfo(`OTP generated for ${normalizedPhone}`);
@@ -111,6 +121,8 @@ class AuthService {
         ip,
         userAgent
       );
+      // ⭐ Record failed attempt
+      await recordOtpFailure(normalizedPhone);
       throw AppError.badRequest('OTP expired or invalid');
     }
 
@@ -128,6 +140,8 @@ class AuthService {
           ip,
           userAgent
         );
+        // ⭐ Record failed attempt
+        await recordOtpFailure(normalizedPhone);
         throw AppError.badRequest('Too many invalid attempts. Request new OTP.');
       }
 
@@ -145,6 +159,9 @@ class AuthService {
         ip,
         userAgent
       );
+
+      // ⭐ Record failed attempt
+      await recordOtpFailure(normalizedPhone);
       throw AppError.badRequest('Invalid OTP');
     }
 
@@ -152,6 +169,9 @@ class AuthService {
       where: { id: otpRecord.id },
       data: { isUsed: true },
     });
+
+    // ⭐ Clear failed attempts on success
+    await clearOtpAttempts(normalizedPhone);
 
     return this._loginOrCreateUser(normalizedPhone, deviceInfo, ip, userAgent);
   }
@@ -196,6 +216,9 @@ class AuthService {
 
     logInfo(`Firebase login: ${normalizedPhone} (uid: ${decoded.uid})`);
 
+    // ⭐ Clear any lockout on successful Firebase verification
+    await clearOtpAttempts(normalizedPhone);
+
     return this._loginOrCreateUser(
       normalizedPhone,
       deviceInfo,
@@ -227,7 +250,6 @@ class AuthService {
 
       const referralCode = helpers.generateReferralCode('USER');
 
-      // ⭐ Try to create, handle P2002 race condition
       try {
         user = await prisma.$transaction(async (tx) => {
           const newUser = await tx.user.create({
@@ -248,7 +270,6 @@ class AuthService {
           return newUser;
         });
       } catch (error) {
-        // Race condition — another request created the user
         if (error.code === 'P2002') {
           user = await prisma.user.findUnique({
             where: { phone: normalizedPhone },
@@ -515,8 +536,10 @@ class AuthService {
 
   // ============================================
   // 9. CREATE ADMIN
+  // ⭐ Simple — no password, only phone/email/name
+  // ⭐ Admin OTP se hi login karega (jaise user)
   // ============================================
-  static async createAdmin({ phone, email, name, password, secretKey }) {
+  static async createAdmin({ phone, email, name, secretKey }) {
     if (secretKey !== config.ADMIN_SECRET_KEY) {
       throw AppError.forbidden('Invalid admin secret key');
     }
@@ -527,10 +550,6 @@ class AuthService {
 
     if (!helpers.isValidEmail(email)) {
       throw AppError.badRequest('Invalid email');
-    }
-
-    if (!password || password.length < 6) {
-      throw AppError.badRequest('Password must be at least 6 characters');
     }
 
     const normalizedPhone = helpers.normalizePhone(phone);
@@ -545,15 +564,12 @@ class AuthService {
       throw AppError.conflict('User with this phone or email already exists');
     }
 
-    const hashedPassword = await bcrypt.hash(password, 10);
-
     const result = await prisma.$transaction(async (tx) => {
       const user = await tx.user.create({
         data: {
           phone: normalizedPhone,
           email,
           name,
-          password: hashedPassword,
           role: ROLES.ADMIN,
           isVerified: true,
           isActive: true,

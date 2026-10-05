@@ -158,7 +158,13 @@ const getStats = asyncHandler(async (req, res) => {
   const stats = await GiftService.getGiftStats();
   return ApiResponse.success(res, stats, 'Gift stats fetched');
 });
-
+// ============================================
+// ⭐ GET /gifts/unread/count (NEW)
+// ============================================
+const getUnreadCount = asyncHandler(async (req, res) => {
+  const result = await GiftService.getUnreadGiftCount(req.user.id);
+  return ApiResponse.success(res, result, 'Unread gift count');
+});
 // ============================================
 // Exports
 // ============================================
@@ -181,4 +187,5 @@ module.exports = {
   deleteGift,
   toggleGiftStatus,
   getStats,
+   getUnreadCount, 
 };

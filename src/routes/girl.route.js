@@ -153,6 +153,17 @@ router.put(
   validate(GirlValidator.verifyGirl),
   GirlController.verifyGirl
 );
+// ⭐ NEW: Check if user can request to become girl
+router.get(
+  '/request/can-request',
+  GirlController.canRequestGirl
+);
+
+// ⭐ NEW: Cancel pending request
+router.delete(
+  '/request/me',
+  GirlController.cancelGirlRequest
+);
 
 // Update girl
 router.put(

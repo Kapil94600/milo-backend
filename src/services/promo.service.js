@@ -1,12 +1,12 @@
 // ============================================
-// Promo Service
+// Promo Service — Bond (Fixed per-user + race conditions)
 // ============================================
 
 const { prisma } = require('../config/database');
 const AppError = require('../utils/AppError');
 const helpers = require('../utils/helpers');
 const UploadService = require('./upload.service');
-const { logInfo } = require('../utils/logger');
+const { logInfo, logError } = require('../utils/logger');
 
 class PromoService {
   // ============================================
@@ -27,16 +27,27 @@ class PromoService {
   // 1. CREATE PROMO
   // ============================================
   static async createPromo(data, adminId) {
+    const code = String(data.code).toUpperCase();
+
     const existing = await prisma.promoCode.findUnique({
-      where: { code: data.code.toUpperCase() },
+      where: { code },
     });
     if (existing) throw AppError.conflict('Promo code already exists');
 
     const imageUrl = await this.resolveImage(data, 'promos');
 
+    // ⭐ Validate value
+    if (data.value <= 0) {
+      throw AppError.badRequest('Promo value must be positive');
+    }
+
+    if (data.type === 'PERCENTAGE' && data.value > 100) {
+      throw AppError.badRequest('Percentage cannot exceed 100');
+    }
+
     return prisma.promoCode.create({
       data: {
-        code: data.code.toUpperCase(),
+        code,
         description: data.description,
         image: imageUrl,
         type: data.type,
@@ -56,12 +67,14 @@ class PromoService {
   }
 
   // ============================================
-  // 2. VALIDATE PROMO
+  // ⭐ 2. VALIDATE PROMO (Atomic + per-user limit)
   // ============================================
   static async validatePromo(code, userId, amount = 0) {
+    const upperCode = String(code).toUpperCase();
+
     const promo = await prisma.promoCode.findFirst({
       where: {
-        code: code.toUpperCase(),
+        code: upperCode,
         isActive: true,
         deletedAt: null,
         startDate: { lte: new Date() },
@@ -71,21 +84,30 @@ class PromoService {
 
     if (!promo) throw AppError.badRequest('Invalid or expired promo code');
 
+    // ⭐ Check total usage limit
     if (promo.maxUses > 0 && promo.usedCount >= promo.maxUses) {
       throw AppError.badRequest('Promo code has reached its limit');
     }
 
+    // ⭐ Check user-specific usage limit
     const userUsage = await prisma.promoUsage.count({
       where: { promoId: promo.id, userId },
     });
+
     if (userUsage >= promo.perUserLimit) {
-      throw AppError.badRequest('You have already used this promo');
+      throw AppError.badRequest(
+        `You have already used this promo (limit: ${promo.perUserLimit})`
+      );
     }
 
+    // ⭐ Check minimum order amount
     if (amount < promo.minOrderAmount) {
-      throw AppError.badRequest(`Minimum order: ₹${promo.minOrderAmount}`);
+      throw AppError.badRequest(
+        `Minimum order amount is ₹${promo.minOrderAmount}`
+      );
     }
 
+    // ⭐ Calculate discount
     let discount = 0;
     if (promo.type === 'PERCENTAGE') {
       discount = (amount * promo.value) / 100;
@@ -102,25 +124,89 @@ class PromoService {
   }
 
   // ============================================
-  // 3. APPLY PROMO
+  // ⭐ 3. APPLY PROMO (ATOMIC — race condition safe)
   // ============================================
   static async applyPromo(code, userId, amount = 0, orderId = null) {
-    const result = await this.validatePromo(code, userId, amount);
+    const upperCode = String(code).toUpperCase();
 
-    await prisma.$transaction([
-      prisma.promoCode.update({
-        where: { id: result.promo.id },
+    // ⭐ Use transaction to prevent race condition
+    const result = await prisma.$transaction(async (tx) => {
+      // Lock promo row (serializable)
+      const promo = await tx.promoCode.findFirst({
+        where: {
+          code: upperCode,
+          isActive: true,
+          deletedAt: null,
+          startDate: { lte: new Date() },
+          OR: [{ endDate: null }, { endDate: { gte: new Date() } }],
+        },
+      });
+
+      if (!promo) throw AppError.badRequest('Invalid or expired promo code');
+
+      // Total usage check
+      if (promo.maxUses > 0 && promo.usedCount >= promo.maxUses) {
+        throw AppError.badRequest('Promo code has reached its limit');
+      }
+
+      // Per-user usage check
+      const userUsage = await tx.promoUsage.count({
+        where: { promoId: promo.id, userId },
+      });
+
+      if (userUsage >= promo.perUserLimit) {
+        throw AppError.badRequest(
+          `You have already used this promo (limit: ${promo.perUserLimit})`
+        );
+      }
+
+      // Min order check
+      if (amount < promo.minOrderAmount) {
+        throw AppError.badRequest(
+          `Minimum order amount is ₹${promo.minOrderAmount}`
+        );
+      }
+
+      // Calculate discount
+      let discount = 0;
+      if (promo.type === 'PERCENTAGE') {
+        discount = (amount * promo.value) / 100;
+        if (promo.maxDiscount && discount > promo.maxDiscount) {
+          discount = promo.maxDiscount;
+        }
+      } else if (promo.type === 'FIXED') {
+        discount = Math.min(promo.value, amount);
+      }
+
+      discount = helpers.round(discount, 2);
+
+      // Atomic increment (with condition guard)
+      const incrementResult = await tx.promoCode.updateMany({
+        where: {
+          id: promo.id,
+          ...(promo.maxUses > 0
+            ? { usedCount: { lt: promo.maxUses } }
+            : {}),
+        },
         data: { usedCount: { increment: 1 } },
-      }),
-      prisma.promoUsage.create({
+      });
+
+      if (incrementResult.count === 0) {
+        throw AppError.badRequest('Promo code has reached its limit');
+      }
+
+      // Record usage
+      await tx.promoUsage.create({
         data: {
-          promoId: result.promo.id,
+          promoId: promo.id,
           userId,
-          discount: result.discount,
+          discount,
           orderId: orderId || null,
         },
-      }),
-    ]);
+      });
+
+      return { promo, discount, isValid: true };
+    });
 
     logInfo(`Promo ${code} applied by ${userId}: ₹${result.discount} off`);
     return result;

@@ -76,10 +76,38 @@ const paginationQuery = {
     limit: Joi.number().integer().min(1).max(100).default(20),
   }),
 };
+// ⭐ Upgrade subscription
+const upgrade = {
+  body: Joi.object({
+    planId: Joi.string().required(),
+    autoRenew: Joi.boolean().default(false),
+  }),
+};
+
+// Preview upgrade
+const previewUpgrade = {
+  params: Joi.object({
+    planId: Joi.string().required(),
+  }),
+};
+const subscribeWithPromo = {
+  body: Joi.object({
+    planId: Joi.string().required(),
+    promoCode: Joi.string()
+      .trim()
+      .uppercase()
+      .max(30)
+      .allow('', null),
+    autoRenew: Joi.boolean().default(false),
+  }),
+};
 
 module.exports = {
   createPlan,
   updatePlan,
   subscribe,
   paginationQuery,
+    upgrade,
+  previewUpgrade,
+  subscribeWithPromo,
 };

@@ -36,5 +36,32 @@ router.post('/admin/broadcast', requireAdmin, validate(NotificationValidator.bro
 // ============================================
 router.put('/:id/read', NotificationController.markAsRead);
 router.delete('/:id', NotificationController.deleteNotification);
+// ============================================
+// ⭐ ADMIN — Schedule + History (NEW)
+// ============================================
+router.post(
+  '/admin/schedule',
+  requireAdmin,
+  validate(NotificationValidator.scheduleNotification),
+  NotificationController.scheduleNotification
+);
+
+router.get(
+  '/admin/scheduled',
+  requireAdmin,
+  NotificationController.getScheduledNotifications
+);
+
+router.delete(
+  '/admin/scheduled/:id',
+  requireAdmin,
+  NotificationController.cancelScheduledNotification
+);
+
+router.get(
+  '/admin/history',
+  requireAdmin,
+  NotificationController.getNotificationHistory
+);
 
 module.exports = router;

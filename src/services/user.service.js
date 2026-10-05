@@ -1,5 +1,5 @@
 // ============================================
-// User Service — Complete
+// User Service — Complete (Bond)
 // ============================================
 
 const { prisma } = require('../config/database');
@@ -129,7 +129,93 @@ class UserService {
   }
 
   // ============================================
-  // 3. UPDATE PROFILE
+  // 3. ⭐ SEARCH USERS (NEW)
+  // ============================================
+  static async searchUsers(query, { limit = 20, excludeUserId = null } = {}) {
+    if (!query || query.trim().length < 2) {
+      return [];
+    }
+
+    const searchTerm = query.trim();
+    const numericQuery = /^\d+$/.test(searchTerm);
+
+    const where = {
+      isActive: true,
+      deletedAt: null,
+      NOT: {
+        id: excludeUserId || undefined,
+      },
+      OR: [
+        { name: { contains: searchTerm, mode: 'insensitive' } },
+        { username: { contains: searchTerm, mode: 'insensitive' } },
+        { email: { contains: searchTerm, mode: 'insensitive' } },
+        ...(numericQuery ? [{ phone: { contains: searchTerm } }] : []),
+      ],
+    };
+
+    // Exclude blocked users (both ways)
+    if (excludeUserId) {
+      const blockedIds = await prisma.blockedUser.findMany({
+        where: {
+          deletedAt: null,
+          OR: [
+            { userId: excludeUserId },
+            { blockedId: excludeUserId },
+          ],
+        },
+        select: { userId: true, blockedId: true },
+      });
+
+      const excludedIds = new Set();
+      blockedIds.forEach((b) => {
+        if (b.userId === excludeUserId) excludedIds.add(b.blockedId);
+        if (b.blockedId === excludeUserId) excludedIds.add(b.userId);
+      });
+
+      if (excludedIds.size > 0) {
+        where.id = { notIn: Array.from(excludedIds) };
+      }
+    }
+
+    const users = await prisma.user.findMany({
+      where,
+      select: {
+        id: true,
+        name: true,
+        username: true,
+        phone: true,
+        profileImage: true,
+        bio: true,
+        city: true,
+        role: true,
+        isOnline: true,
+        isVerified: true,
+        lastSeen: true,
+        girl: {
+          select: {
+            id: true,
+            isOnline: true,
+            isAvailable: true,
+            isVerified: true,
+            rating: true,
+            totalReviews: true,
+            hourlyRate: true,
+          },
+        },
+      },
+      take: Math.min(limit, 50),
+      orderBy: [
+        { isOnline: 'desc' },
+        { isVerified: 'desc' },
+        { name: 'asc' },
+      ],
+    });
+
+    return users;
+  }
+
+  // ============================================
+  // 4. UPDATE PROFILE
   // ============================================
   static async updateProfile(userId, data) {
     const allowed = [
@@ -210,7 +296,7 @@ class UserService {
   }
 
   // ============================================
-  // 4. UPDATE SETTINGS
+  // 5. UPDATE SETTINGS
   // ============================================
   static async updateSettings(userId, data) {
     const user = await prisma.user.findUnique({ where: { id: userId } });
@@ -236,7 +322,7 @@ class UserService {
   }
 
   // ============================================
-  // 5. ADD DEVICE TOKEN (FCM)
+  // 6. ADD DEVICE TOKEN (FCM)
   // ============================================
   static async addDeviceToken(userId, token, platform = 'unknown', deviceInfo = {}) {
     if (!token) throw AppError.badRequest('FCM token is required');
@@ -285,7 +371,7 @@ class UserService {
   }
 
   // ============================================
-  // 6. REMOVE DEVICE TOKEN
+  // 7. REMOVE DEVICE TOKEN
   // ============================================
   static async removeDeviceToken(userId, token) {
     if (!token) throw AppError.badRequest('FCM token is required');
@@ -306,7 +392,7 @@ class UserService {
   }
 
   // ============================================
-  // 7. UPDATE ONLINE STATUS
+  // 8. UPDATE ONLINE STATUS
   // ============================================
   static async updateOnlineStatus(userId, isOnline) {
     const user = await prisma.user.update({
@@ -335,7 +421,7 @@ class UserService {
   }
 
   // ============================================
-  // 8. NEARBY USERS
+  // 9. NEARBY USERS
   // ============================================
   static async getNearbyUsers(userId, lat, lng, radiusKm = 10) {
     if (!lat || !lng) {
@@ -394,47 +480,6 @@ class UserService {
       Math.sin(dLat / 2) ** 2 +
       Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
     return 2 * R * Math.asin(Math.sqrt(a));
-  }
-
-  // ============================================
-  // 9. SEARCH USERS (public)
-  // ============================================
-  static async searchUsers(query, { limit = 20, excludeUserId = null } = {}) {
-    if (!query || query.length < 2) {
-      return [];
-    }
-
-    const where = {
-      isActive: true,
-      deletedAt: null,
-      OR: [
-        { name: { contains: query, mode: 'insensitive' } },
-        { username: { contains: query, mode: 'insensitive' } },
-      ],
-    };
-
-    if (excludeUserId) {
-      where.id = { not: excludeUserId };
-    }
-
-    const users = await prisma.user.findMany({
-      where,
-      select: {
-        id: true,
-        name: true,
-        username: true,
-        profileImage: true,
-        bio: true,
-        city: true,
-        role: true,
-        isOnline: true,
-        isVerified: true,
-        lastSeen: true,
-      },
-      take: limit,
-    });
-
-    return users;
   }
 
   // ============================================
@@ -585,6 +630,164 @@ class UserService {
     if (!user) return null;
     const { password, refreshToken, ...safe } = user;
     return safe;
+  }
+    // ============================================
+  // ⭐ USER PREFERENCES (NEW)
+  // ============================================
+
+  /**
+   * Get user preferences
+   */
+  static async getPreferences(userId) {
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        language: true,
+        darkMode: true,
+      },
+    });
+
+    if (!user) throw AppError.notFound('User not found');
+
+    // Get from settings or use defaults
+    const prefs = await prisma.userPreference.findUnique({
+      where: { userId },
+    });
+
+    return {
+      language: user.language || 'en',
+      darkMode: user.darkMode ?? false,
+      notificationPreferences: prefs?.notificationPreferences || {
+        chat: true,
+        calls: true,
+        coins: true,
+        system: true,
+        marketing: false,
+      },
+      privacyPreferences: prefs?.privacyPreferences || {
+        showOnline: true,
+        showLastSeen: true,
+        allowCalls: true,
+        allowMessages: true,
+      },
+    };
+  }
+
+  /**
+   * Update user preferences
+   */
+  static async updatePreferences(userId, data) {
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    if (!user) throw AppError.notFound('User not found');
+
+    const userUpdates = {};
+    if (data.language) userUpdates.language = data.language;
+    if (data.darkMode !== undefined) userUpdates.darkMode = data.darkMode;
+
+    // Upsert preferences
+    const existingPrefs = await prisma.userPreference.findUnique({
+      where: { userId },
+    });
+
+    const notifPrefs = data.notificationPreferences
+      ? {
+          ...(existingPrefs?.notificationPreferences || {
+            chat: true,
+            calls: true,
+            coins: true,
+            system: true,
+            marketing: false,
+          }),
+          ...data.notificationPreferences,
+        }
+      : existingPrefs?.notificationPreferences;
+
+    const privacyPrefs = data.privacyPreferences
+      ? {
+          ...(existingPrefs?.privacyPreferences || {
+            showOnline: true,
+            showLastSeen: true,
+            allowCalls: true,
+            allowMessages: true,
+          }),
+          ...data.privacyPreferences,
+        }
+      : existingPrefs?.privacyPreferences;
+
+    await prisma.$transaction(async (tx) => {
+      // Update user core
+      if (Object.keys(userUpdates).length > 0) {
+        await tx.user.update({
+          where: { id: userId },
+          data: userUpdates,
+        });
+      }
+
+      // Upsert preferences
+      await tx.userPreference.upsert({
+        where: { userId },
+        update: {
+          notificationPreferences: notifPrefs,
+          privacyPreferences: privacyPrefs,
+        },
+        create: {
+          userId,
+          notificationPreferences: notifPrefs,
+          privacyPreferences: privacyPrefs,
+        },
+      });
+    });
+
+    await invalidateCache(userId);
+
+    logInfo(`User preferences updated: ${userId}`);
+    return this.getPreferences(userId);
+  }
+
+  /**
+   * Reset preferences to defaults
+   */
+  static async resetPreferences(userId) {
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    if (!user) throw AppError.notFound('User not found');
+
+    await prisma.$transaction(async (tx) => {
+      await tx.user.update({
+        where: { id: userId },
+        data: {
+          language: 'en',
+          darkMode: false,
+        },
+      });
+
+      await tx.userPreference.deleteMany({
+        where: { userId },
+      });
+    });
+
+    await invalidateCache(userId);
+
+    logInfo(`User preferences reset: ${userId}`);
+    return this.getPreferences(userId);
+  }
+
+  /**
+   * Get user's notification preference for a specific type
+   */
+  static async shouldNotify(userId, type) {
+    try {
+      const prefs = await prisma.userPreference.findUnique({
+        where: { userId },
+        select: { notificationPreferences: true },
+      });
+
+      if (!prefs?.notificationPreferences) return true; // default: allow
+
+      const np = prefs.notificationPreferences;
+      return np[type] !== false;
+    } catch (e) {
+      return true;
+    }
   }
 }
 

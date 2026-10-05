@@ -100,6 +100,8 @@ router.put(
   GiftController.toggleGiftStatus
 );
 
+// ⭐ NEW: Unread gift count (before /:id)
+router.get('/unread/count', GiftController.getUnreadCount);
 // ============================================
 // Dynamic LAST
 // ============================================

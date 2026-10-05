@@ -1,5 +1,5 @@
 // ============================================
-// User Controller
+// User Controller (Bond) — Complete
 // ============================================
 
 const asyncHandler = require('../utils/asyncHandler');
@@ -23,15 +23,11 @@ const getStats = asyncHandler(async (req, res) => {
 });
 
 // ============================================
-// PUT /users/profile
-// ============================================
-// ============================================
 // PUT /users/profile — supports file upload
 // ============================================
 const updateProfile = asyncHandler(async (req, res) => {
   const data = { ...req.body };
 
-  // Attach uploaded files (if multipart)
   if (req.files) {
     if (req.files.profileImageFile?.[0]) {
       data.profileImageFile = req.files.profileImageFile[0];
@@ -44,6 +40,7 @@ const updateProfile = asyncHandler(async (req, res) => {
   const user = await UserService.updateProfile(req.user.id, data);
   return ApiResponse.success(res, user, 'Profile updated successfully');
 });
+
 // ============================================
 // PUT /users/settings
 // ============================================
@@ -99,6 +96,18 @@ const getNearbyUsers = asyncHandler(async (req, res) => {
 });
 
 // ============================================
+// ⭐ GET /users/search (NEW)
+// ============================================
+const searchUsers = asyncHandler(async (req, res) => {
+  const { q, limit = 20 } = req.query;
+  const users = await UserService.searchUsers(q, {
+    limit: parseInt(limit) || 20,
+    excludeUserId: req.user.id,
+  });
+  return ApiResponse.success(res, users, 'Search results');
+});
+
+// ============================================
 // GET /users/:id
 // ============================================
 const getUserById = asyncHandler(async (req, res) => {
@@ -128,7 +137,23 @@ const deleteAccount = asyncHandler(async (req, res) => {
   const result = await UserService.deleteAccount(req.user.id);
   return ApiResponse.success(res, result, 'Account deleted');
 });
+// ============================================
+// ⭐ PREFERENCES (NEW)
+// ============================================
+const getPreferences = asyncHandler(async (req, res) => {
+  const prefs = await UserService.getPreferences(req.user.id);
+  return ApiResponse.success(res, prefs, 'Preferences fetched');
+});
 
+const updatePreferences = asyncHandler(async (req, res) => {
+  const prefs = await UserService.updatePreferences(req.user.id, req.body);
+  return ApiResponse.success(res, prefs, 'Preferences updated');
+});
+
+const resetPreferences = asyncHandler(async (req, res) => {
+  const prefs = await UserService.resetPreferences(req.user.id);
+  return ApiResponse.success(res, prefs, 'Preferences reset');
+});
 // ============================================
 // Exports
 // ============================================
@@ -141,7 +166,11 @@ module.exports = {
   removeDeviceToken,
   updateOnlineStatus,
   getNearbyUsers,
+  searchUsers, // ⭐ NEW
   getUserById,
   getAllUsers,
   deleteAccount,
+    getPreferences,
+  updatePreferences,
+  resetPreferences,
 };

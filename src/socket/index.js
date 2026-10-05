@@ -1,5 +1,5 @@
 // ============================================
-// Socket.IO Setup — Complete
+// Socket.IO Setup — Bond (Full Auth)
 // ============================================
 
 const { Server } = require('socket.io');
@@ -7,14 +7,72 @@ const jwt = require('jsonwebtoken');
 const config = require('../config');
 const { prisma } = require('../config/database');
 const { getRedisPubSub } = require('../config/redis');
-const { logInfo, logError } = require('../utils/logger');
+const { logInfo, logError, logWarn } = require('../utils/logger');
 const { SOCKET_EVENTS } = require('../common/constants');
 const { registerChatHandlers, setConnectedUsers } = require('./chat.socket');
 const { registerCallHandlers } = require('./call.socket');
 const NotificationService = require('../services/notification.service');
 
 let io = null;
-const connectedUsers = new Map(); // userId -> Set<socketId>
+const connectedUsers = new Map();
+
+// ============================================
+// ⭐ Socket Event Auth Guard
+// ============================================
+const requireAuthSocket = (socket, handler) => {
+  return async (...args) => {
+    // Verify user is still authenticated
+    if (!socket.data.userId || !socket.data.user) {
+      logWarn('Socket event from unauthenticated user');
+      socket.emit('error', { message: 'Authentication required' });
+      return;
+    }
+
+    // Verify user is still active (DB check every 100 events or on sensitive)
+    const now = Date.now();
+    if (!socket.data.lastAuthCheck || now - socket.data.lastAuthCheck > 60000) {
+      try {
+        const user = await prisma.user.findUnique({
+          where: { id: socket.data.userId },
+          select: { id: true, isActive: true, status: true, deletedAt: true },
+        });
+
+        if (!user || !user.isActive || user.deletedAt || user.status === 'BLOCKED') {
+          logWarn(`Socket auth failed for user ${socket.data.userId} — disconnecting`);
+          socket.emit('error', { message: 'Account inactive' });
+          socket.disconnect(true);
+          return;
+        }
+
+        socket.data.lastAuthCheck = now;
+      } catch (e) {
+        logError('Socket auth check failed', e);
+      }
+    }
+
+    return handler(...args);
+  };
+};
+
+// ============================================
+// Wrap register handler to apply auth guard
+// ============================================
+const applyAuthGuard = (socket) => {
+  const originalOn = socket.on.bind(socket);
+
+  socket.on = (event, handler) => {
+    // Skip system events
+    const systemEvents = ['disconnect', 'error', 'connect'];
+    if (systemEvents.includes(event)) {
+      return originalOn(event, handler);
+    }
+
+    // Wrap with auth guard
+    return originalOn(event, requireAuthSocket(socket, handler));
+  };
+
+  return socket;
+};
 
 // ============================================
 // Initialize Socket.IO
@@ -28,11 +86,13 @@ const initSocket = async (server) => {
     },
     path: config.SOCKET.PATH,
     transports: ['websocket', 'polling'],
+    pingTimeout: 60000,
+    pingInterval: 25000,
   });
 
   NotificationService.setSocketIO(io);
 
-  // Optional: Redis adapter for multi-instance
+  // Redis adapter
   try {
     const { pubClient, subClient } = await getRedisPubSub();
     if (pubClient && subClient) {
@@ -47,11 +107,17 @@ const initSocket = async (server) => {
   }
 
   // ============================================
-  // Auth middleware
+  // Auth middleware (connection)
   // ============================================
   io.use(async (socket, next) => {
     try {
-      const token = socket.handshake.auth?.token || socket.handshake.query?.token;
+      const token =
+        socket.handshake.auth?.token ||
+        socket.handshake.query?.token ||
+        (socket.handshake.headers?.authorization?.startsWith('Bearer ')
+          ? socket.handshake.headers.authorization.split(' ')[1]
+          : null);
+
       if (!token) throw new Error('Authentication required');
 
       const decoded = jwt.verify(token, config.JWT_SECRET);
@@ -63,6 +129,7 @@ const initSocket = async (server) => {
           name: true,
           role: true,
           profileImage: true,
+          phone: true,
           isActive: true,
           status: true,
           deletedAt: true,
@@ -78,10 +145,11 @@ const initSocket = async (server) => {
 
       socket.data.user = user;
       socket.data.userId = user.id;
+      socket.data.lastAuthCheck = Date.now();
 
       next();
     } catch (error) {
-      logError('Socket auth failed', error);
+      logError('Socket auth failed', error.message);
       next(new Error('Authentication failed'));
     }
   });
@@ -95,18 +163,21 @@ const initSocket = async (server) => {
 
     logInfo(`🔌 Socket connected: ${userId} (${user.name})`);
 
-    // Track connected user (multi-device)
+    // ⭐ Apply per-event auth guard
+    applyAuthGuard(socket);
+
+    // Track connected user
     if (!connectedUsers.has(userId)) {
       connectedUsers.set(userId, new Set());
     }
     connectedUsers.get(userId).add(socket.id);
     setConnectedUsers(connectedUsers);
 
-    // Join personal rooms
+    // Join rooms
     socket.join(`user:${userId}`);
     socket.join(`role:${user.role}`);
 
-    // Send unread notification count
+    // Send unread count
     try {
       const unreadCount = await NotificationService.getUnreadCount(userId);
       socket.emit('notification:unread-count', { count: unreadCount });
@@ -114,7 +185,7 @@ const initSocket = async (server) => {
       logError('Failed to send unread count', e);
     }
 
-    // Update user online status
+    // Update online status
     try {
       await prisma.user.update({
         where: { id: userId },
@@ -132,7 +203,7 @@ const initSocket = async (server) => {
       logError('Failed to update online status', e);
     }
 
-    // Broadcast online status
+    // Broadcast online
     socket.broadcast.emit(SOCKET_EVENTS.USER_ONLINE, {
       userId,
       name: user.name,
@@ -144,15 +215,54 @@ const initSocket = async (server) => {
       getUserSocketId,
       isUserOnline,
       getConnectedUsers,
+      getIO,
     };
 
     registerChatHandlers(io, socket, socketHelpers);
     registerCallHandlers(io, socket, socketHelpers);
-    registerRateHandlers(io, socket); // ⭐ Rate handlers
+    registerRateHandlers(io, socket);
+
+    // Pending call pickup
+    try {
+      const pendingCall = await prisma.call.findFirst({
+        where: {
+          receiverId: userId,
+          status: 'INITIATED',
+          createdAt: { gte: new Date(Date.now() - 30000) },
+        },
+        include: {
+          caller: {
+            select: { id: true, name: true, profileImage: true, phone: true },
+          },
+        },
+        orderBy: { createdAt: 'desc' },
+      });
+
+      if (pendingCall) {
+        const incomingEvent =
+          pendingCall.type === 'VIDEO'
+            ? SOCKET_EVENTS.CALL_VIDEO_INCOMING
+            : SOCKET_EVENTS.CALL_VOICE_INCOMING;
+
+        socket.emit(incomingEvent, {
+          callId: pendingCall.id,
+          callerId: pendingCall.callerId,
+          callerName: pendingCall.caller.name,
+          callerImage: pendingCall.caller.profileImage,
+          type: pendingCall.type,
+          quality: pendingCall.quality,
+          coinRate: pendingCall.coinRate,
+        });
+
+        logInfo(`📞 Delivered pending call ${pendingCall.id} to ${userId}`);
+      }
+    } catch (e) {
+      logError('Pending call check failed', e);
+    }
 
     // Disconnect
-    socket.on('disconnect', async () => {
-      logInfo(`🔌 Socket disconnected: ${userId}`);
+    socket.on('disconnect', async (reason) => {
+      logInfo(`🔌 Socket disconnected: ${userId} (${reason})`);
 
       const userSockets = connectedUsers.get(userId);
       if (userSockets) {
@@ -162,7 +272,6 @@ const initSocket = async (server) => {
         }
       }
 
-      // Only mark offline if no more sockets
       if (!connectedUsers.has(userId)) {
         try {
           await prisma.user.update({
@@ -186,18 +295,17 @@ const initSocket = async (server) => {
     });
   });
 
-  logInfo('✅ Socket.IO initialized');
+  logInfo('✅ Socket.IO initialized with per-event auth');
   return io;
 };
 
 // ============================================
-// ⭐ Rate-Specific Handlers
+// Rate Handlers
 // ============================================
 const registerRateHandlers = (io, socket) => {
   const userId = socket.data.userId;
   const user = socket.data.user;
 
-  // Girl: Submit rate change request
   socket.on('rate:submit', async (data) => {
     try {
       io.to('role:ADMIN').emit('rate:pending-new', {
@@ -214,7 +322,6 @@ const registerRateHandlers = (io, socket) => {
     }
   });
 
-  // Admin: Approve rate change
   socket.on('rate:approve', async (data) => {
     if (user.role !== 'ADMIN') return;
 
@@ -229,7 +336,6 @@ const registerRateHandlers = (io, socket) => {
     }
   });
 
-  // Admin: Reject rate change
   socket.on('rate:reject', async (data) => {
     if (user.role !== 'ADMIN') return;
 
@@ -249,7 +355,6 @@ const registerRateHandlers = (io, socket) => {
 // Helpers
 // ============================================
 const getIO = () => io;
-
 const getConnectedUsers = () => Array.from(connectedUsers.keys());
 
 const getUserSocketId = (userId) => {
@@ -259,9 +364,6 @@ const getUserSocketId = (userId) => {
 
 const isUserOnline = (userId) => connectedUsers.has(userId);
 
-// ============================================
-// Public: Notify Rate Change (from services)
-// ============================================
 const notifyRateChange = (girlUserId, action, data) => {
   if (!io) return;
   io.to(`user:${girlUserId}`).emit(`rate:${action.toLowerCase()}`, data);
@@ -276,6 +378,19 @@ const notifyAdminRatePending = (girlUserId, data) => {
   });
 };
 
+const emitToUser = (userId, event, data) => {
+  if (!io) return false;
+  try {
+    io.to(`user:${userId}`).emit(event, data);
+    return true;
+  } catch (e) {
+    return false;
+  }
+};
+
+// ============================================
+// Exports
+// ============================================
 module.exports = {
   initSocket,
   getIO,
@@ -284,4 +399,5 @@ module.exports = {
   isUserOnline,
   notifyRateChange,
   notifyAdminRatePending,
+  emitToUser,
 };

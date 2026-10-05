@@ -280,6 +280,23 @@ const verifyGirl = asyncHandler(async (req, res) => {
 });
 
 // ============================================
+// ⭐ GIRL REQUEST — Pre-check (NEW)
+// ============================================
+const canRequestGirl = asyncHandler(async (req, res) => {
+  const GirlRequestService = require('../services/girlRequest.service');
+  const result = await GirlRequestService.canRequest(req.user.id);
+  return ApiResponse.success(res, result, 'Can-request checked');
+});
+
+// ============================================
+// ⭐ GIRL REQUEST — Cancel (NEW)
+// ============================================
+const cancelGirlRequest = asyncHandler(async (req, res) => {
+  const GirlRequestService = require('../services/girlRequest.service');
+  const result = await GirlRequestService.cancelRequest(req.user.id);
+  return ApiResponse.success(res, result, 'Request cancelled');
+});
+// ============================================
 // ADMIN — Update Girl
 // ============================================
 const updateGirl = asyncHandler(async (req, res) => {
@@ -390,4 +407,6 @@ module.exports = {
   getTopGirls,
   getGirlProfileById,
   getGirlByUserId,
+  canRequestGirl,
+  cancelGirlRequest,
 };

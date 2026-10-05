@@ -1,11 +1,10 @@
 // ============================================
-// User Validators (Joi)
+// User Validators (Joi) — Complete
 // ============================================
 
 const Joi = require('joi');
 const { J } = require('../middleware/validate');
 
-// PUT /users/profile
 // PUT /users/profile
 const updateProfile = {
   body: Joi.object({
@@ -18,7 +17,6 @@ const updateProfile = {
       .max(30)
       .pattern(/^[a-z0-9_]+$/)
       .message('Username: lowercase letters, numbers, underscore only'),
-    // image can be provided via file OR url
     profileImage: Joi.string().uri().allow(''),
     coverImage: Joi.string().uri().allow(''),
     bio: Joi.string().max(500).allow(''),
@@ -32,7 +30,7 @@ const updateProfile = {
     language: Joi.string().max(10),
     darkMode: Joi.boolean(),
   })
-    .unknown(true) // allow profileImageFile, coverImageFile
+    .unknown(true)
     .min(1)
     .prefs({ convert: true, abortEarly: false }),
 };
@@ -81,6 +79,14 @@ const getNearbyUsers = {
   }),
 };
 
+// ⭐ NEW: GET /users/search
+const searchUsers = {
+  query: Joi.object({
+    q: Joi.string().trim().min(2).max(100).required(),
+    limit: Joi.number().integer().min(1).max(50).default(20),
+  }),
+};
+
 // GET /users (admin)
 const getAllUsers = {
   query: Joi.object({
@@ -91,7 +97,30 @@ const getAllUsers = {
     status: Joi.string().valid('ACTIVE', 'INACTIVE', 'BLOCKED', 'DELETED'),
   }),
 };
-
+// ============================================
+// ⭐ User Preferences (NEW)
+// ============================================
+const updatePreferences = {
+  body: Joi.object({
+    language: Joi.string().max(10),
+    darkMode: Joi.boolean(),
+    notificationPreferences: Joi.object({
+      chat: Joi.boolean(),
+      calls: Joi.boolean(),
+      coins: Joi.boolean(),
+      system: Joi.boolean(),
+      marketing: Joi.boolean(),
+    }),
+    privacyPreferences: Joi.object({
+      showOnline: Joi.boolean(),
+      showLastSeen: Joi.boolean(),
+      allowCalls: Joi.boolean(),
+      allowMessages: Joi.boolean(),
+    }),
+  })
+    .min(1)
+    .prefs({ convert: true, abortEarly: false }),
+};
 module.exports = {
   updateProfile,
   updateSettings,
@@ -99,5 +128,7 @@ module.exports = {
   removeDeviceToken,
   updateOnlineStatus,
   getNearbyUsers,
+  searchUsers, // ⭐ NEW
   getAllUsers,
+  updatePreferences,
 };

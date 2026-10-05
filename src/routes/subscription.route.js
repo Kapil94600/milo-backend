@@ -77,5 +77,24 @@ router.delete('/plans/:id', requireAdmin, SubscriptionController.deletePlan);
 router.get('/admin/stats', requireAdmin, SubscriptionController.getStats);
 router.get('/admin/plans/:id/subscriptions', requireAdmin, SubscriptionController.getPlanSubscriptions);
 router.post('/admin/renew', requireAdmin, SubscriptionController.renewSubscriptions);
+// ⭐ NEW: Upgrade subscription
+router.post(
+  '/upgrade',
+  idempotency,
+  validate(SubscriptionValidator.upgrade),
+  SubscriptionController.upgradeSubscription
+);
 
+// ⭐ NEW: Preview upgrade
+router.get(
+  '/upgrade/preview/:planId',
+  SubscriptionController.previewUpgrade
+);
+// ⭐ NEW: Subscribe with promo
+router.post(
+  '/subscribe-with-promo',
+  idempotency,
+  validate(SubscriptionValidator.subscribeWithPromo),
+  SubscriptionController.subscribeWithPromo
+);
 module.exports = router;

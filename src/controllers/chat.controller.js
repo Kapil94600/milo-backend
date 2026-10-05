@@ -1,10 +1,14 @@
 // ============================================
-// Chat Controller
+// Chat Controller (Bond) — Complete
 // ============================================
 
 const asyncHandler = require('../utils/asyncHandler');
 const ChatService = require('../services/chat.service');
 const ApiResponse = require('../utils/response');
+
+// ============================================
+// USER — Create chat
+// ============================================
 
 // POST /chats/direct
 const createDirectChat = asyncHandler(async (req, res) => {
@@ -19,6 +23,10 @@ const createGroupChat = asyncHandler(async (req, res) => {
   const chat = await ChatService.createGroupChat(req.user.id, name, participants);
   return ApiResponse.created(res, chat, 'Group chat created');
 });
+
+// ============================================
+// USER — Get chats
+// ============================================
 
 // GET /chats
 const getChats = asyncHandler(async (req, res) => {
@@ -35,6 +43,10 @@ const getChat = asyncHandler(async (req, res) => {
   const chat = await ChatService.getChatById(req.params.id, req.user.id);
   return ApiResponse.success(res, chat, 'Chat fetched');
 });
+
+// ============================================
+// USER — Messages
+// ============================================
 
 // POST /chats/:chatId/messages
 const sendMessage = asyncHandler(async (req, res) => {
@@ -83,6 +95,10 @@ const deleteMessageForAll = asyncHandler(async (req, res) => {
   return ApiResponse.success(res, result, 'Message deleted for everyone');
 });
 
+// ============================================
+// USER — Reactions
+// ============================================
+
 // POST /chats/messages/:messageId/reactions
 const addReaction = asyncHandler(async (req, res) => {
   const { reaction } = req.body;
@@ -95,6 +111,10 @@ const removeReaction = asyncHandler(async (req, res) => {
   const result = await ChatService.removeReaction(req.params.messageId, req.user.id);
   return ApiResponse.success(res, result, 'Reaction removed');
 });
+
+// ============================================
+// USER — Group management
+// ============================================
 
 // PUT /chats/:chatId/participants
 const addParticipants = asyncHandler(async (req, res) => {
@@ -119,6 +139,10 @@ const leaveGroup = asyncHandler(async (req, res) => {
   return ApiResponse.success(res, result, 'Left group');
 });
 
+// ============================================
+// USER — Utility
+// ============================================
+
 // GET /chats/unread/total
 const getTotalUnread = asyncHandler(async (req, res) => {
   const count = await ChatService.getTotalUnreadCount(req.user.id);
@@ -138,15 +162,88 @@ const deleteChat = asyncHandler(async (req, res) => {
   return ApiResponse.success(res, result, 'Chat deleted');
 });
 
-// ============================================
-// ✅ NEW: GET /chats/costs
-// ============================================
+// GET /chats/costs
 const getChatCosts = asyncHandler(async (req, res) => {
   const costs = await ChatService.getChatCosts();
   return ApiResponse.success(res, costs, 'Chat costs fetched');
 });
 
+// ============================================
+// ⭐ ADMIN — Chat monitoring (NEW)
+// ============================================
+
+// GET /chats/admin/all
+const getAllChatsAdmin = asyncHandler(async (req, res) => {
+  const { page, limit, type, search, userId } = req.query;
+  const result = await ChatService.getAllChats({
+    page: parseInt(page) || 1,
+    limit: parseInt(limit) || 20,
+    type: type || undefined,
+    search: search || undefined,
+    userId: userId || undefined,
+  });
+  return ApiResponse.success(res, result, 'All chats fetched');
+});
+
+// GET /chats/admin/:chatId/messages
+const getChatMessagesAdmin = asyncHandler(async (req, res) => {
+  const { page, limit } = req.query;
+  const result = await ChatService.getChatMessagesAdmin(req.params.chatId, {
+    page: parseInt(page) || 1,
+    limit: parseInt(limit) || 50,
+  });
+  return ApiResponse.success(res, result, 'Chat messages fetched');
+});
+// ============================================
+// ⭐ FORWARD MESSAGE (NEW)
+// ============================================
+const forwardMessage = asyncHandler(async (req, res) => {
+  const { targetChatIds } = req.body;
+  const result = await ChatService.forwardMessage(
+    req.params.messageId,
+    req.user.id,
+    targetChatIds
+  );
+  return ApiResponse.success(res, result, 'Message forwarded');
+});
+
+// ============================================
+// ⭐ STAR MESSAGE (NEW)
+// ============================================
+const toggleStarMessage = asyncHandler(async (req, res) => {
+  const result = await ChatService.toggleStarMessage(
+    req.params.messageId,
+    req.user.id
+  );
+  return ApiResponse.success(
+    res,
+    result,
+    result.isStarred ? 'Message starred' : 'Message unstarred'
+  );
+});
+
+const getStarredMessages = asyncHandler(async (req, res) => {
+  const { page, limit } = req.query;
+  const result = await ChatService.getStarredMessages(req.user.id, {
+    page: parseInt(page) || 1,
+    limit: parseInt(limit) || 20,
+  });
+  return ApiResponse.success(res, result, 'Starred messages fetched');
+});
+
+// ============================================
+// ⭐ EXPORT CHAT (NEW)
+// ============================================
+const exportChat = asyncHandler(async (req, res) => {
+  const result = await ChatService.exportChat(req.params.chatId, req.user.id);
+  return ApiResponse.success(res, result, 'Chat exported');
+});
+
+// ============================================
+// Exports
+// ============================================
 module.exports = {
+  // User
   createDirectChat,
   createGroupChat,
   getChats,
@@ -165,5 +262,12 @@ module.exports = {
   getTotalUnread,
   searchMessages,
   deleteChat,
-  getChatCosts,  // ✅ NEW
+  getChatCosts,
+  // ⭐ Admin
+  getAllChatsAdmin,
+  getChatMessagesAdmin,
+   forwardMessage,
+  toggleStarMessage,
+  getStarredMessages,
+  exportChat,
 };

@@ -104,6 +104,40 @@ const renewSubscriptions = asyncHandler(async (req, res) => {
   return ApiResponse.success(res, result, 'Renewal complete');
 });
 
+// ⭐ Upgrade subscription
+const upgradeSubscription = asyncHandler(async (req, res) => {
+  const { planId, autoRenew } = req.body;
+  const result = await SubscriptionService.upgradeSubscription(
+    req.user.id,
+    planId,
+    autoRenew || false
+  );
+  return ApiResponse.success(res, result, 'Subscription updated');
+});
+
+// ⭐ Preview upgrade cost
+const previewUpgrade = asyncHandler(async (req, res) => {
+  const result = await SubscriptionService.previewUpgrade(
+    req.user.id,
+    req.params.planId
+  );
+  return ApiResponse.success(res, result, 'Upgrade preview');
+});
+// ============================================
+// ⭐ Subscribe with promo (NEW)
+// ============================================
+const subscribeWithPromo = asyncHandler(async (req, res) => {
+  const { planId, promoCode, autoRenew } = req.body;
+
+  const result = await SubscriptionService.subscribeWithPromo(
+    req.user.id,
+    planId,
+    promoCode || null,
+    autoRenew || false
+  );
+
+  return ApiResponse.created(res, result, 'Subscribed successfully');
+});
 // ============================================
 // Exports
 // ============================================
@@ -121,4 +155,7 @@ module.exports = {
   getStats,
   getPlanSubscriptions,
   renewSubscriptions,
+  upgradeSubscription,
+  previewUpgrade,
+   subscribeWithPromo,
 };

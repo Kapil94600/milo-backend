@@ -127,7 +127,7 @@ class SubscriptionService {
   // ============================================
   // 5. SUBSCRIBE
   // ============================================
-  static async subscribe(userId, planId, autoRenew = false) {
+   static async subscribe(userId, planId, autoRenew = false) {
     const plan = await this.getPlanById(planId);
     if (!plan.isActive) throw AppError.badRequest('Plan not available');
 
@@ -467,6 +467,414 @@ class SubscriptionService {
         user: { select: { id: true, name: true, phone: true, email: true } },
       },
     });
+  }
+    // ============================================
+  // ⭐ UPGRADE SUBSCRIPTION (NEW)
+  // ============================================
+  static async upgradeSubscription(userId, newPlanId, autoRenew = false) {
+    const newPlan = await this.getPlanById(newPlanId);
+    if (!newPlan.isActive) throw AppError.badRequest('Plan not available');
+
+    const currentSub = await prisma.subscription.findFirst({
+      where: {
+        userId,
+        isActive: true,
+        endDate: { gt: new Date() },
+        deletedAt: null,
+      },
+      include: { plan: true },
+    });
+
+    if (!currentSub) {
+      // No active subscription → just subscribe normally
+      return this.subscribe(userId, newPlanId, autoRenew);
+    }
+
+    // Validate: new plan must be "higher" (or user must confirm downgrade)
+    const currentPrice = currentSub.plan.price;
+    const newPrice = newPlan.price;
+
+    const isUpgrade = newPrice > currentPrice;
+    const isDowngrade = newPrice < currentPrice;
+
+    // Calculate proration
+    const now = new Date();
+    const endDate = new Date(currentSub.endDate);
+    const remainingMs = endDate - now;
+    const remainingDays = Math.max(0, Math.ceil(remainingMs / (24 * 60 * 60 * 1000)));
+
+    const currentDailyRate = currentPrice / currentSub.plan.durationDays;
+    const creditValue = currentDailyRate * remainingDays;
+
+    const newDailyRate = newPlan.price / newPlan.durationDays;
+    const newPeriodValue = newDailyRate * remainingDays;
+    const proratedCost = Math.max(0, newPeriodValue - creditValue);
+
+    // Check wallet balance
+    const wallet = await WalletService.getWallet(userId);
+    if (wallet.balance < proratedCost) {
+      throw AppError.badRequest(
+        `Insufficient balance. Need ₹${proratedCost.toFixed(2)} for upgrade.`
+      );
+    }
+
+    const result = await prisma.$transaction(async (tx) => {
+      // Cancel old subscription
+      await tx.subscription.update({
+        where: { id: currentSub.id },
+        data: {
+          isActive: false,
+          cancelledAt: now,
+          autoRenew: false,
+        },
+      });
+
+      // Deduct prorated cost
+      if (proratedCost > 0) {
+        const updated = await tx.wallet.updateMany({
+          where: { userId, balance: { gte: proratedCost } },
+          data: {
+            balance: { decrement: proratedCost },
+            totalSpent: { increment: proratedCost },
+          },
+        });
+
+        if (updated.count === 0) {
+          throw new Error('Insufficient balance');
+        }
+
+        await tx.transaction.create({
+          data: {
+            userId,
+            type: 'DEBIT',
+            category: 'SUBSCRIPTION',
+            amount: proratedCost,
+            coins: 0,
+            description: `Upgrade to ${newPlan.name} (prorated)`,
+            status: 'COMPLETED',
+            referenceModel: 'SubscriptionPlan',
+            referenceId: newPlan.id,
+          },
+        });
+      }
+
+      // Create new subscription with remaining time
+      const newSub = await tx.subscription.create({
+        data: {
+          userId,
+          planId: newPlan.id,
+          startDate: now,
+          endDate: endDate, // Same end date (no extension)
+          isActive: true,
+          autoRenew,
+          paymentStatus: 'COMPLETED',
+          amount: proratedCost,
+          currency: newPlan.currency,
+          features: {
+            freeMessages: newPlan.freeMessages,
+            freeVoiceMinutes: newPlan.freeVoiceMinutes,
+            freeVideoMinutes: newPlan.freeVideoMinutes,
+            bonusCoins: newPlan.bonusCoins,
+            discountPercent: newPlan.discountPercent,
+            prioritySupport: newPlan.prioritySupport,
+            adFree: newPlan.adFree,
+          },
+          usage: {
+            messagesUsed: 0,
+            voiceMinutesUsed: 0,
+            videoMinutesUsed: 0,
+            coinsUsed: 0,
+          },
+        },
+        include: { plan: true },
+      });
+
+      // Bonus coins from new plan
+      if (newPlan.bonusCoins > 0) {
+        const wallet2 = await tx.wallet.update({
+          where: { userId },
+          data: {
+            coins: { increment: newPlan.bonusCoins },
+            totalEarned: { increment: newPlan.bonusCoins },
+          },
+        });
+
+        await tx.transaction.create({
+          data: {
+            userId,
+            type: 'CREDIT',
+            category: 'SUBSCRIPTION',
+            amount: 0,
+            coins: newPlan.bonusCoins,
+            description: `Bonus coins from ${newPlan.name}`,
+            status: 'COMPLETED',
+            balanceAfter: wallet2.balance,
+            coinsAfter: wallet2.coins,
+            referenceModel: 'Subscription',
+            referenceId: newSub.id,
+          },
+        });
+      }
+
+      return newSub;
+    });
+
+    logInfo(
+      `User ${userId} ${isUpgrade ? 'upgraded' : isDowngrade ? 'downgraded' : 'changed'} to ${newPlan.name}`
+    );
+
+    // Notify
+    NotificationService.sendSubscriptionNotification(
+      userId,
+      newPlan,
+      isUpgrade ? 'ACTIVATED' : 'RENEWED'
+    ).catch(() => {});
+
+    return {
+      subscription: result,
+      upgrade: {
+        isUpgrade,
+        isDowngrade,
+        proratedCost: Math.round(proratedCost * 100) / 100,
+        creditValue: Math.round(creditValue * 100) / 100,
+        remainingDays,
+      },
+    };
+  }
+
+  // ============================================
+  // ⭐ PREVIEW UPGRADE COST (NEW)
+  // ============================================
+  static async previewUpgrade(userId, newPlanId) {
+    const newPlan = await this.getPlanById(newPlanId);
+    if (!newPlan.isActive) throw AppError.badRequest('Plan not available');
+
+    const currentSub = await prisma.subscription.findFirst({
+      where: {
+        userId,
+        isActive: true,
+        endDate: { gt: new Date() },
+        deletedAt: null,
+      },
+      include: { plan: true },
+    });
+
+    if (!currentSub) {
+      return {
+        hasExisting: false,
+        planName: newPlan.name,
+        price: newPlan.price,
+        durationDays: newPlan.durationDays,
+        proratedCost: newPlan.price,
+        message: 'No active subscription — full price applies',
+      };
+    }
+
+    const now = new Date();
+    const endDate = new Date(currentSub.endDate);
+    const remainingMs = endDate - now;
+    const remainingDays = Math.max(0, Math.ceil(remainingMs / (24 * 60 * 60 * 1000)));
+
+    const currentDailyRate = currentSub.plan.price / currentSub.plan.durationDays;
+    const creditValue = currentDailyRate * remainingDays;
+
+    const newDailyRate = newPlan.price / newPlan.durationDays;
+    const newPeriodValue = newDailyRate * remainingDays;
+    const proratedCost = Math.max(0, newPeriodValue - creditValue);
+
+    return {
+      hasExisting: true,
+      currentPlan: {
+        name: currentSub.plan.name,
+        price: currentSub.plan.price,
+        remainingDays,
+      },
+      newPlan: {
+        name: newPlan.name,
+        price: newPlan.price,
+        durationDays: newPlan.durationDays,
+      },
+      calculation: {
+        creditValue: Math.round(creditValue * 100) / 100,
+        newPeriodValue: Math.round(newPeriodValue * 100) / 100,
+        proratedCost: Math.round(proratedCost * 100) / 100,
+      },
+      isUpgrade: newPlan.price > currentSub.plan.price,
+      isDowngrade: newPlan.price < currentSub.plan.price,
+    };
+  }
+    // ============================================
+  // ⭐ SUBSCRIBE WITH PROMO (NEW)
+  // ============================================
+  static async subscribeWithPromo(userId, planId, promoCode = null, autoRenew = false) {
+    const plan = await this.getPlanById(planId);
+    if (!plan.isActive) throw AppError.badRequest('Plan not available');
+
+    const existing = await prisma.subscription.findFirst({
+      where: {
+        userId,
+        isActive: true,
+        endDate: { gt: new Date() },
+        deletedAt: null,
+      },
+    });
+
+    if (existing) {
+      throw AppError.conflict('You already have an active subscription');
+    }
+
+    let promo = null;
+    let discount = 0;
+    let finalPrice = plan.price;
+
+    // ⭐ Apply promo if provided
+    if (promoCode) {
+      const PromoService = require('./promo.service');
+      const promoResult = await PromoService.validatePromo(
+        promoCode,
+        userId,
+        plan.price
+      );
+
+      promo = promoResult.promo;
+      discount = promoResult.discount;
+      finalPrice = Math.max(0, plan.price - discount);
+    }
+
+    // Check wallet
+    const wallet = await WalletService.getWallet(userId);
+    if (wallet.balance < finalPrice) {
+      throw AppError.badRequest(
+        `Insufficient balance. Need ₹${finalPrice.toFixed(2)}`
+      );
+    }
+
+    const startDate = new Date();
+    const endDate = helpers.addDays(startDate, plan.durationDays);
+
+    const subscription = await prisma.$transaction(async (tx) => {
+      // Deduct (finalPrice after discount)
+      const updated = await tx.wallet.updateMany({
+        where: { userId, balance: { gte: finalPrice } },
+        data: {
+          balance: { decrement: finalPrice },
+          totalSpent: { increment: finalPrice },
+        },
+      });
+
+      if (updated.count === 0) {
+        throw AppError.badRequest('Insufficient balance');
+      }
+
+      await tx.transaction.create({
+        data: {
+          userId,
+          type: 'DEBIT',
+          category: 'SUBSCRIPTION',
+          amount: finalPrice,
+          coins: 0,
+          description: `Subscribed to ${plan.name}${
+            promo ? ` (promo: ${promo.code}, -₹${discount})` : ''
+          }`,
+          status: 'COMPLETED',
+          referenceModel: 'SubscriptionPlan',
+          referenceId: plan.id,
+        },
+      });
+
+      const sub = await tx.subscription.create({
+        data: {
+          userId,
+          planId: plan.id,
+          startDate,
+          endDate,
+          isActive: true,
+          autoRenew,
+          paymentStatus: 'COMPLETED',
+          amount: finalPrice,
+          currency: plan.currency,
+          features: {
+            freeMessages: plan.freeMessages,
+            freeVoiceMinutes: plan.freeVoiceMinutes,
+            freeVideoMinutes: plan.freeVideoMinutes,
+            bonusCoins: plan.bonusCoins,
+            discountPercent: plan.discountPercent,
+            prioritySupport: plan.prioritySupport,
+            adFree: plan.adFree,
+          },
+          usage: {
+            messagesUsed: 0,
+            voiceMinutesUsed: 0,
+            videoMinutesUsed: 0,
+            coinsUsed: 0,
+          },
+          data: promo ? { promoCode: promo.code, discount } : null,
+        },
+        include: { plan: true },
+      });
+
+      // Bonus coins
+      if (plan.bonusCoins > 0) {
+        const wallet2 = await tx.wallet.update({
+          where: { userId },
+          data: {
+            coins: { increment: plan.bonusCoins },
+            totalEarned: { increment: plan.bonusCoins },
+          },
+        });
+
+        await tx.transaction.create({
+          data: {
+            userId,
+            type: 'CREDIT',
+            category: 'SUBSCRIPTION',
+            amount: 0,
+            coins: plan.bonusCoins,
+            description: `Bonus coins from ${plan.name}`,
+            status: 'COMPLETED',
+            balanceAfter: wallet2.balance,
+            coinsAfter: wallet2.coins,
+            referenceModel: 'Subscription',
+            referenceId: sub.id,
+          },
+        });
+      }
+
+      // ⭐ Record promo usage
+      if (promo) {
+        await tx.promoCode.update({
+          where: { id: promo.id },
+          data: { usedCount: { increment: 1 } },
+        });
+
+        await tx.promoUsage.create({
+          data: {
+            promoId: promo.id,
+            userId,
+            discount,
+            orderId: sub.id,
+          },
+        });
+      }
+
+      return sub;
+    });
+
+    logInfo(
+      `User ${userId} subscribed to ${plan.name}${promo ? ` with promo ${promo.code}` : ''}`
+    );
+
+    NotificationService.sendSubscriptionNotification(
+      userId,
+      plan,
+      'ACTIVATED'
+    ).catch(() => {});
+
+    return {
+      subscription,
+      promo: promo ? { code: promo.code, discount } : null,
+      paid: finalPrice,
+    };
   }
 }
 

@@ -1,5 +1,5 @@
 // ============================================
-// Call Routes
+// Call Routes (Bond) — Complete
 // ============================================
 
 const express = require('express');
@@ -21,7 +21,14 @@ router.get('/active', CallController.getActiveCall);
 router.get('/missed', CallController.getMissedCalls);
 router.get('/stats', CallController.getCallStats);
 router.get('/rates', CallController.getCallRates);
-router.get('/video-eligibility', CallController.getVideoEligibility);  // ✅ NEW
+router.get('/video-eligibility', CallController.getVideoEligibility);
+
+// ⭐ NEW: Admin — get all calls
+router.get(
+  '/admin/all',
+  requireAdmin,
+  CallController.getAllCalls
+);
 
 // Admin routes
 router.put(

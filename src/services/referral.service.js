@@ -1,5 +1,5 @@
 // ============================================
-// Referral Service
+// Referral Service — Bond (Multi-Level)
 // ============================================
 
 const { prisma } = require('../config/database');
@@ -7,7 +7,21 @@ const AppError = require('../utils/AppError');
 const helpers = require('../utils/helpers');
 const WalletService = require('./wallet.service');
 const NotificationService = require('./notification.service');
-const { logInfo } = require('../utils/logger');
+const { logInfo, logError } = require('../utils/logger');
+
+// ============================================
+// Multi-level referral configuration
+// ============================================
+// Level 1: Direct referral (50 coins)
+// Level 2: Indirect referral (10 coins)
+// Level 3: Indirect referral (5 coins)
+// ============================================
+
+const REFERRAL_LEVELS = {
+  1: 50,
+  2: 10,
+  3: 5,
+};
 
 const DEFAULT_BONUS_COINS = 50;
 
@@ -54,7 +68,7 @@ class ReferralService {
   }
 
   // ============================================
-  // 3. CREATE REFERRAL
+  // 3. CREATE REFERRAL (with multi-level tracking)
   // ============================================
   static async createReferral(referrerId, referredId, referralCode) {
     if (referrerId === referredId) {
@@ -85,7 +99,58 @@ class ReferralService {
   }
 
   // ============================================
-  // 4. COMPLETE REFERRAL
+  // ⭐ 4. GET REFERRAL CHAIN (multi-level)
+  // ============================================
+  static async getReferralChain(userId, maxLevel = 3) {
+    const chain = {
+      1: [],
+      2: [],
+      3: [],
+    };
+
+    // Level 1: Direct referrer
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, referralCode: true },
+    });
+
+    if (!user) return chain;
+
+    // Find who referred this user
+    const directReferral = await prisma.referral.findFirst({
+      where: { referredId: userId },
+      include: { referrer: { select: { id: true, name: true } } },
+    });
+
+    if (directReferral?.referrer) {
+      chain[1].push(directReferral.referrer);
+
+      // Level 2: Who referred the level-1 referrer
+      const level2Referral = await prisma.referral.findFirst({
+        where: { referredId: directReferral.referrer.id },
+        include: { referrer: { select: { id: true, name: true } } },
+      });
+
+      if (level2Referral?.referrer) {
+        chain[2].push(level2Referral.referrer);
+
+        // Level 3
+        const level3Referral = await prisma.referral.findFirst({
+          where: { referredId: level2Referral.referrer.id },
+          include: { referrer: { select: { id: true, name: true } } },
+        });
+
+        if (level3Referral?.referrer) {
+          chain[3].push(level3Referral.referrer);
+        }
+      }
+    }
+
+    return chain;
+  }
+
+  // ============================================
+  // 5. COMPLETE REFERRAL
   // ============================================
   static async completeReferral(referralId) {
     const referral = await prisma.referral.findUnique({ where: { id: referralId } });
@@ -111,7 +176,7 @@ class ReferralService {
   }
 
   // ============================================
-  // 5. REWARD REFERRAL
+  // ⭐ 6. REWARD REFERRAL (Multi-Level)
   // ============================================
   static async rewardReferral(referralId, bonusCoins = DEFAULT_BONUS_COINS) {
     const referral = await prisma.referral.findUnique({ where: { id: referralId } });
@@ -124,14 +189,18 @@ class ReferralService {
       throw AppError.badRequest('Already rewarded');
     }
 
+    // ============================================
+    // Level 1 reward: Direct referrer
+    // ============================================
     await WalletService.addCoins(
       referral.referrerId,
       bonusCoins,
       'REFERRAL_BONUS',
-      `Referral bonus`,
+      `Referral bonus (Level 1)`,
       { referenceId: referral.id, referenceModel: 'Referral' }
     );
 
+    // Referred user gets half
     const referredBonus = Math.floor(bonusCoins / 2);
     if (referredBonus > 0) {
       await WalletService.addCoins(
@@ -143,6 +212,48 @@ class ReferralService {
       );
     }
 
+    // ============================================
+    // ⭐ Level 2 & 3 rewards: Upline chain
+    // ============================================
+    try {
+      const chain = await this.getReferralChain(referral.referrerId, 3);
+
+      // Level 2 referrer gets bonus
+      if (chain[2]?.length > 0) {
+        const level2Bonus = REFERRAL_LEVELS[2] || 10;
+        for (const upline of chain[2]) {
+          await WalletService.addCoins(
+            upline.id,
+            level2Bonus,
+            'REFERRAL_BONUS',
+            `Indirect referral bonus (Level 2)`,
+            { referenceId: referral.id, referenceModel: 'Referral' }
+          );
+          logInfo(`Level 2 bonus ${level2Bonus} to ${upline.id}`);
+        }
+      }
+
+      // Level 3 referrer gets bonus
+      if (chain[3]?.length > 0) {
+        const level3Bonus = REFERRAL_LEVELS[3] || 5;
+        for (const upline of chain[3]) {
+          await WalletService.addCoins(
+            upline.id,
+            level3Bonus,
+            'REFERRAL_BONUS',
+            `Indirect referral bonus (Level 3)`,
+            { referenceId: referral.id, referenceModel: 'Referral' }
+          );
+          logInfo(`Level 3 bonus ${level3Bonus} to ${upline.id}`);
+        }
+      }
+    } catch (e) {
+      logError('Multi-level referral reward failed', e);
+    }
+
+    // ============================================
+    // Mark as rewarded
+    // ============================================
     const updated = await prisma.referral.update({
       where: { id: referralId },
       data: {
@@ -179,7 +290,7 @@ class ReferralService {
   }
 
   // ============================================
-  // 6. CHECK CONDITIONS
+  // 7. CHECK CONDITIONS
   // ============================================
   static async checkConditions(userId) {
     const user = await prisma.user.findUnique({ where: { id: userId } });
@@ -187,7 +298,7 @@ class ReferralService {
   }
 
   // ============================================
-  // 7. GET MY REFERRALS
+  // 8. GET MY REFERRALS (downline)
   // ============================================
   static async getMyReferrals(userId, { page = 1, limit = 20, status } = {}) {
     const where = { referrerId: userId, deletedAt: null };
@@ -219,7 +330,7 @@ class ReferralService {
   }
 
   // ============================================
-  // 8. GET MY STATS
+  // 9. GET MY STATS (with multi-level breakdown)
   // ============================================
   static async getMyStats(userId) {
     const [total, completed, rewarded, pending, coinsEarned] = await Promise.all([
@@ -233,17 +344,25 @@ class ReferralService {
       }),
     ]);
 
+    // ⭐ Count indirect referrals (level 2, 3)
+    let indirectCount = 0;
+    try {
+      const chain = await this.getReferralChain(userId, 3);
+      indirectCount = (chain[2]?.length || 0) + (chain[3]?.length || 0);
+    } catch (e) {}
+
     return {
       total,
       completed,
       rewarded,
       pending,
+      indirect: indirectCount,
       totalCoinsEarned: coinsEarned._sum.coinsRewarded || 0,
     };
   }
 
   // ============================================
-  // 9. PROCESS PENDING REWARDS (cron)
+  // 10. PROCESS PENDING REWARDS (cron)
   // ============================================
   static async processPendingRewards() {
     const referrals = await prisma.referral.findMany({
@@ -261,7 +380,7 @@ class ReferralService {
   }
 
   // ============================================
-  // 10. GET ALL REFERRALS (admin)
+  // 11. GET ALL REFERRALS (admin)
   // ============================================
   static async getAllReferrals({ page = 1, limit = 20, status } = {}) {
     const where = { deletedAt: null };

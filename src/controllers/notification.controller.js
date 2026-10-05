@@ -63,7 +63,45 @@ const broadcast = asyncHandler(async (req, res) => {
   const result = await NotificationService.broadcast(data, role);
   return ApiResponse.success(res, result, 'Broadcast sent');
 });
+// ============================================
+// ⭐ SCHEDULE + HISTORY (NEW)
+// ============================================
+const scheduleNotification = asyncHandler(async (req, res) => {
+  const result = await NotificationService.scheduleNotification(
+    req.user.id,
+    req.body
+  );
+  return ApiResponse.created(res, result, 'Notification scheduled');
+});
 
+const getScheduledNotifications = asyncHandler(async (req, res) => {
+  const { page, limit, status } = req.query;
+  const result = await NotificationService.getScheduledNotifications({
+    page: parseInt(page) || 1,
+    limit: parseInt(limit) || 20,
+    status,
+  });
+  return ApiResponse.success(res, result, 'Scheduled notifications fetched');
+});
+
+const cancelScheduledNotification = asyncHandler(async (req, res) => {
+  const result = await NotificationService.cancelScheduledNotification(
+    req.params.id,
+    req.user.id
+  );
+  return ApiResponse.success(res, result, 'Scheduled notification cancelled');
+});
+
+const getNotificationHistory = asyncHandler(async (req, res) => {
+  const { page, limit, type, status } = req.query;
+  const result = await NotificationService.getNotificationHistory({
+    page: parseInt(page) || 1,
+    limit: parseInt(limit) || 20,
+    type,
+    status,
+  });
+  return ApiResponse.success(res, result, 'Notification history fetched');
+});
 // ============================================
 // Exports
 // ============================================
@@ -77,4 +115,8 @@ module.exports = {
   sendToUser,
   sendBulk,
   broadcast,
+    scheduleNotification,
+  getScheduledNotifications,
+  cancelScheduledNotification,
+  getNotificationHistory,
 };
