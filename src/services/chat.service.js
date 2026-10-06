@@ -136,6 +136,9 @@ class ChatService {
   // ============================================
   // 5. CREATE / GET DIRECT CHAT
   // ============================================
+  // ============================================
+  // CREATE / GET DIRECT CHAT (Atomic)
+  // ============================================
   static async createDirectChat(userId, otherUserId) {
     if (userId === otherUserId) {
       throw AppError.badRequest('Cannot create chat with yourself');
@@ -144,6 +147,7 @@ class ChatService {
     const other = await prisma.user.findUnique({ where: { id: otherUserId } });
     if (!other) throw AppError.notFound('User not found');
 
+    // Check block
     const blocked = await prisma.blockedUser.findFirst({
       where: {
         OR: [
@@ -155,15 +159,15 @@ class ChatService {
     });
     if (blocked) throw AppError.forbidden('Cannot chat with this user');
 
-    const existing = await prisma.chat.findFirst({
+    // ⭐ Create deterministic key (sorted)
+    const sortedIds = [userId, otherUserId].sort();
+    const directKey = `direct:${sortedIds[0]}:${sortedIds[1]}`;
+
+    // ⭐ Try to find existing
+    let chat = await prisma.chat.findFirst({
       where: {
-        type: ChatType.DIRECT,
-        isActive: true,
+        directKey,
         deletedAt: null,
-        AND: [
-          { participants: { some: { userId } } },
-          { participants: { some: { userId: otherUserId } } },
-        ],
       },
       include: {
         participants: {
@@ -182,33 +186,64 @@ class ChatService {
       },
     });
 
-    if (existing && existing.participants.length === 2) {
-      return existing;
+    if (chat) {
+      return chat;
     }
 
-    return prisma.chat.create({
-      data: {
-        type: ChatType.DIRECT,
-        participants: {
-          create: [{ userId }, { userId: otherUserId }],
+    // ⭐ Create with unique key (atomic)
+    try {
+      chat = await prisma.chat.create({
+        data: {
+          type: ChatType.DIRECT,
+          directKey, // ⭐ NEW FIELD
+          participants: {
+            create: [{ userId }, { userId: otherUserId }],
+          },
         },
-      },
-      include: {
-        participants: {
-          include: {
-            user: {
-              select: {
-                id: true,
-                name: true,
-                profileImage: true,
-                isOnline: true,
-                lastSeen: true,
+        include: {
+          participants: {
+            include: {
+              user: {
+                select: {
+                  id: true,
+                  name: true,
+                  profileImage: true,
+                  isOnline: true,
+                  lastSeen: true,
+                },
               },
             },
           },
         },
-      },
-    });
+      });
+
+      return chat;
+    } catch (e) {
+      // ⭐ P2002 = unique constraint (race condition)
+      if (e.code === 'P2002') {
+        chat = await prisma.chat.findFirst({
+          where: { directKey, deletedAt: null },
+          include: {
+            participants: {
+              include: {
+                user: {
+                  select: {
+                    id: true,
+                    name: true,
+                    profileImage: true,
+                    isOnline: true,
+                    lastSeen: true,
+                  },
+                },
+              },
+            },
+          },
+        });
+
+        if (chat) return chat;
+      }
+      throw e;
+    }
   }
 
   // ============================================
