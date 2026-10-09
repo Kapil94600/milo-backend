@@ -10,7 +10,6 @@
     "start": "node src/server.js",
     "dev": "nodemon src/server.js",
     "prod": "NODE_ENV=production node src/server.js",
-
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:migrate:prod": "prisma migrate deploy",
@@ -18,26 +17,21 @@
     "prisma:studio": "prisma studio",
     "prisma:seed": "node prisma/seed.js",
     "prisma:reset": "prisma migrate reset",
-
     "setup": "npm install && npm run prisma:generate && npm run prisma:push && npm run prisma:seed",
-
     "test": "jest",
     "test:unit": "jest tests/unit",
     "test:integration": "jest tests/integration",
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
     "test:ci": "jest --ci --coverage --maxWorkers=2 --forceExit",
-
     "lint": "eslint src --ext .js",
     "lint:fix": "eslint src --ext .js --fix",
-
     "pm2:start": "pm2 start ecosystem.config.js --env production",
     "pm2:stop": "pm2 stop ecosystem.config.js",
     "pm2:restart": "pm2 restart ecosystem.config.js",
     "pm2:reload": "pm2 reload ecosystem.config.js",
     "pm2:logs": "pm2 logs",
     "pm2:monit": "pm2 monit",
-
     "docker:build": "docker-compose build",
     "docker:up": "docker-compose up -d",
     "docker:down": "docker-compose down",
@@ -58,6 +52,7 @@
     "express-rate-limit": "^7.4.1",
     "express-validator": "^7.2.0",
     "firebase-admin": "^12.7.0",
+    "googleapis": "^178.0.0",
     "helmet": "^8.0.0",
     "joi": "^17.13.3",
     "jsonwebtoken": "^9.0.2",

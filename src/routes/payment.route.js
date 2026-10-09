@@ -1,51 +1,26 @@
-// ============================================
-// Payment Routes — Bond (with rate limiting)
-// ============================================
-
 const express = require('express');
 const PaymentController = require('../controllers/payment.controller');
 const { authenticate } = require('../middleware/auth');
 const idempotency = require('../middleware/idempotency');
-const { createLimiter } = require('../middleware/rateLimiter');
 
 const router = express.Router();
 
-// ⭐ Rate limiters
-const paymentLimiter = createLimiter(
-  15, // 15 minutes
-  10, // 10 requests
-  'Too many payment attempts. Please try again later.'
-);
+// Public (no auth)
+router.post('/google-play/rtdn', PaymentController.handleRTDN);
 
-const verifyLimiter = createLimiter(
-  15,
-  20,
-  'Too many verification attempts. Please try again later.'
-);
-
-// ============================================
-// Webhook (raw body, no auth, no rate limit)
-// ============================================
-router.post('/webhook/razorpay', PaymentController.webhook);
-
-// ============================================
 // User routes
-// ============================================
 router.use(authenticate);
 
-// ⭐ Create order — rate limited
 router.post(
-  '/create-order',
-  paymentLimiter,
+  '/google-play/verify-subscription',
   idempotency,
-  PaymentController.createOrder
+  PaymentController.verifySubscription
 );
 
-// ⭐ Verify — rate limited
 router.post(
-  '/verify',
-  verifyLimiter,
-  PaymentController.verifyPayment
+  '/google-play/verify-product',
+  idempotency,
+  PaymentController.verifyProductPurchase
 );
 
 module.exports = router;

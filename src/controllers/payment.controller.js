@@ -1,27 +1,23 @@
-// ============================================
-// Payment Controller
-// ============================================
-
 const asyncHandler = require('../utils/asyncHandler');
 const PaymentService = require('../services/payment.service');
 const ApiResponse = require('../utils/response');
 
-const createOrder = asyncHandler(async (req, res) => {
-  const { packageId } = req.body;
-  const order = await PaymentService.createOrder(req.user.id, packageId);
-  return ApiResponse.success(res, order, 'Order created');
+// POST /payments/google-play/verify-subscription
+const verifySubscription = asyncHandler(async (req, res) => {
+  const result = await PaymentService.verifySubscription(req.user.id, req.body);
+  return ApiResponse.success(res, result, 'Subscription verified');
 });
 
-const verifyPayment = asyncHandler(async (req, res) => {
-  const result = await PaymentService.verifyPayment(req.user.id, req.body);
-  return ApiResponse.success(res, result, 'Payment verified');
+// POST /payments/google-play/verify-product
+const verifyProductPurchase = asyncHandler(async (req, res) => {
+  const result = await PaymentService.verifyProductPurchase(req.user.id, req.body);
+  return ApiResponse.success(res, result, 'Product verified');
 });
 
-const webhook = asyncHandler(async (req, res) => {
-  const signature = req.headers['x-razorpay-signature'];
-  const rawBody = req.rawBody || JSON.stringify(req.body);
-  const result = await PaymentService.handleWebhook(rawBody, signature);
+// POST /payments/google-play/rtdn (webhook)
+const handleRTDN = asyncHandler(async (req, res) => {
+  const result = await PaymentService.handleRTDN(req.body);
   return res.json(result);
 });
 
-module.exports = { createOrder, verifyPayment, webhook };
+module.exports = { verifySubscription, verifyProductPurchase, handleRTDN };

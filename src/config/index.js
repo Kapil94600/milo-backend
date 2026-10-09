@@ -209,7 +209,15 @@ const config = {
     SENDER_ID: process.env.SMS_SENDER_ID || 'BOND',
     TEMPLATE_ID: process.env.SMS_TEMPLATE_ID || '',
   },
+// RAZORPAY section को हटाओ, और ये add करो:
 
+GOOGLE_PLAY: {
+  // Service Account JSON from Google Cloud Console
+  // File path or JSON string
+  SERVICE_ACCOUNT_EMAIL: process.env.GOOGLE_PLAY_SERVICE_ACCOUNT_EMAIL || '',
+  PRIVATE_KEY: process.env.GOOGLE_PLAY_PRIVATE_KEY || '',
+  PACKAGE_NAME: process.env.GOOGLE_PLAY_PACKAGE_NAME || 'com.jony88.bond',
+},
   // Email
   SMTP: {
     HOST: process.env.SMTP_HOST || '',

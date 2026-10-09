@@ -1,5 +1,5 @@
 // ============================================
-// Call Service — Voice/Video with Girl Rates + Min Coins Gate
+// Chat Service — Bond (Complete + Fixed)
 // ============================================
 
 const { prisma } = require('../config/database');
@@ -8,1017 +8,80 @@ const helpers = require('../utils/helpers');
 const WalletService = require('./wallet.service');
 const NotificationService = require('./notification.service');
 const { logInfo, logError } = require('../utils/logger');
-const { CallType, CallStatus, PaymentStatus } = require('../common/enums');
+const { ChatType, MessageType } = require('../common/enums');
 
-// Default rates (fallback if girl not set)
-const DEFAULT_VOICE_RATE = 10;   // coins per minute
-const DEFAULT_VIDEO_RATE = 20;   // coins per minute
+// ============================================
+// Default costs (fallback)
+// ============================================
+const DEFAULT_MESSAGE_COST = 1;
+const DEFAULT_MEDIA_COST = 5;
+const DEFAULT_GIRL_EARNING_PERCENT = 50;
 
-// Platform commission percent
-const DEFAULT_PLATFORM_COMMISSION = 50;
-const DEFAULT_MIN_COINS_FOR_VIDEO = 50;
-
-// ⭐ Lazy-load socket IO (avoid circular dep)
-const getIO = () => {
-  try {
-    return require('../socket').getIO();
-  } catch (e) {
-    return null;
-  }
-};
-
-class CallService {
+class ChatService {
   // ============================================
-  // HELPER: Get call rates (global defaults)
+  // 1. Get Global Chat Costs
   // ============================================
-  static async getCallRates() {
+  static async getChatCosts() {
     try {
-      const [voiceSetting, videoSetting, commissionSetting] = await Promise.all([
-        prisma.setting.findUnique({ where: { key: 'COIN_VOICE_COST_PER_MINUTE' } }),
-        prisma.setting.findUnique({ where: { key: 'COIN_VIDEO_COST_PER_MINUTE' } }),
-        prisma.setting.findUnique({ where: { key: 'CALL_PLATFORM_COMMISSION' } }),
+      const [msgSetting, mediaSetting, girlSetting] = await Promise.all([
+        prisma.setting.findUnique({ where: { key: 'CHAT_MESSAGE_COST' } }),
+        prisma.setting.findUnique({ where: { key: 'CHAT_MEDIA_COST' } }),
+        prisma.setting.findUnique({
+          where: { key: 'CHAT_GIRL_EARNING_PERCENT' },
+        }),
       ]);
 
       return {
-        VOICE: Number(voiceSetting?.value) || DEFAULT_VOICE_RATE,
-        VIDEO: Number(videoSetting?.value) || DEFAULT_VIDEO_RATE,
-        platformCommission:
-          Number(commissionSetting?.value) || DEFAULT_PLATFORM_COMMISSION,
+        messageCost: Number(msgSetting?.value) || DEFAULT_MESSAGE_COST,
+        mediaCost: Number(mediaSetting?.value) || DEFAULT_MEDIA_COST,
+        girlEarningPercent:
+          Number(girlSetting?.value) || DEFAULT_GIRL_EARNING_PERCENT,
       };
-    } catch {
+    } catch (e) {
       return {
-        VOICE: DEFAULT_VOICE_RATE,
-        VIDEO: DEFAULT_VIDEO_RATE,
-        platformCommission: DEFAULT_PLATFORM_COMMISSION,
+        messageCost: DEFAULT_MESSAGE_COST,
+        mediaCost: DEFAULT_MEDIA_COST,
+        girlEarningPercent: DEFAULT_GIRL_EARNING_PERCENT,
       };
     }
   }
 
   // ============================================
-  // ⭐ HELPER: Get girl-specific rates
+  // 2. Get Girl-Specific Message Rate
   // ============================================
-  static async getGirlRates(receiverId) {
-    const receiver = await prisma.user.findUnique({
-      where: { id: receiverId },
-      select: { id: true, role: true },
-    });
-
-    if (!receiver || receiver.role !== 'GIRL') {
-      const defaults = await this.getCallRates();
-      return {
-        voiceRate: defaults.VOICE,
-        videoRate: defaults.VIDEO,
-        isGirlRate: false,
-      };
-    }
-
+  static async getGirlMessageRate(girlUserId) {
     const girl = await prisma.girl.findUnique({
-      where: { userId: receiverId },
-      select: {
-        hourlyRate: true,
-        videoCallRate: true,
-        rateApproved: true,
-      },
+      where: { userId: girlUserId },
+      select: { chatMessageRate: true, rateApproved: true },
     });
 
-    if (!girl) {
-      const defaults = await this.getCallRates();
-      return {
-        voiceRate: defaults.VOICE,
-        videoRate: defaults.VIDEO,
-        isGirlRate: false,
-      };
+    if (!girl || !girl.rateApproved) {
+      const costs = await this.getChatCosts();
+      return costs.messageCost;
     }
 
-    const voiceRatePerMin = Math.max(1, Math.ceil((girl.hourlyRate || 100) / 60));
-    const videoRatePerMin = Math.max(2, Math.ceil((girl.videoCallRate || 200) / 60));
-
-    return {
-      voiceRate: voiceRatePerMin,
-      videoRate: videoRatePerMin,
-      isGirlRate: true,
-      girlHourlyRate: girl.hourlyRate,
-      girlVideoRate: girl.videoCallRate,
-    };
+    return girl.chatMessageRate || DEFAULT_MESSAGE_COST;
   }
 
   // ============================================
-  // Get Min Coins for Video
+  // 3. Get active subscription
   // ============================================
-  static async getMinCoinsForVideo() {
-    try {
-      const setting = await prisma.setting.findUnique({
-        where: { key: 'CALL_MIN_COINS_FOR_VIDEO' },
-      });
-      return Number(setting?.value) || DEFAULT_MIN_COINS_FOR_VIDEO;
-    } catch {
-      return DEFAULT_MIN_COINS_FOR_VIDEO;
-    }
-  }
-
-  // ============================================
-  // Check Video Eligibility
-  // ============================================
-  static async checkVideoEligibility(userId) {
-    const minCoins = await this.getMinCoinsForVideo();
-    const wallet = await WalletService.getWallet(userId);
-
-    const eligible = wallet.coins >= minCoins;
-
-    return {
-      eligible,
-      requiredCoins: minCoins,
-      currentCoins: wallet.coins,
-      reason: eligible
-        ? 'Video call unlocked'
-        : `You need at least ${minCoins} coins to enable video calls. Current: ${wallet.coins}`,
-    };
-  }
-
-  // ============================================
-  // ⭐ Initiate Call (REST — socket emit added)
-  // ============================================
-  static async initiateCall(
-    callerId,
-    receiverId,
-    type = CallType.VOICE,
-    quality = 'MEDIUM'
-  ) {
-    if (callerId === receiverId) {
-      throw AppError.badRequest('Cannot call yourself');
-    }
-
-    if (![CallType.VOICE, CallType.VIDEO].includes(type)) {
-      throw AppError.badRequest('Invalid call type');
-    }
-
-    const [caller, receiver] = await Promise.all([
-      prisma.user.findUnique({ where: { id: callerId } }),
-      prisma.user.findUnique({ where: { id: receiverId } }),
-    ]);
-
-    if (!caller || !receiver) throw AppError.notFound('User not found');
-    if (!caller.isActive || !receiver.isActive) {
-      throw AppError.badRequest('User is not active');
-    }
-
-    // Check block
-    const blocked = await prisma.blockedUser.findFirst({
+  static async getActiveSubscription(userId) {
+    return prisma.subscription.findFirst({
       where: {
-        OR: [
-          { userId: callerId, blockedId: receiverId },
-          { userId: receiverId, blockedId: callerId },
-        ],
-        deletedAt: null,
-        AND: [
-          { OR: [{ isPermanent: true }, { expiresAt: { gt: new Date() } }] },
-        ],
-      },
-    });
-    if (blocked) throw AppError.forbidden('Cannot call this user');
-
-    // Check existing active call
-    const activeCall = await prisma.call.findFirst({
-      where: {
-        OR: [
-          { callerId, status: { in: [CallStatus.INITIATED, CallStatus.CONNECTED] } },
-          { receiverId: callerId, status: { in: [CallStatus.INITIATED, CallStatus.CONNECTED] } },
-          { callerId: receiverId, status: { in: [CallStatus.INITIATED, CallStatus.CONNECTED] } },
-          { receiverId, status: { in: [CallStatus.INITIATED, CallStatus.CONNECTED] } },
-        ],
+        userId,
+        isActive: true,
+        endDate: { gt: new Date() },
         deletedAt: null,
       },
-    });
-    if (activeCall) throw AppError.conflict('User is already in a call');
-
-    // Check receiver's availability (if girl)
-    if (receiver.role === 'GIRL') {
-      const girl = await prisma.girl.findUnique({
-        where: { userId: receiverId },
-      });
-      if (girl) {
-        if (!girl.isOnline) throw AppError.badRequest('Girl is offline');
-        if (!girl.isAvailable) throw AppError.badRequest('Girl is busy');
-        if (!girl.acceptCalls) throw AppError.badRequest('Girl is not accepting calls');
-      }
-    }
-
-    // Get rates
-    const rates = await this.getGirlRates(receiverId);
-    const coinRate = type === CallType.VOICE ? rates.voiceRate : rates.videoRate;
-
-    // VIDEO CALL GATE
-    if (type === CallType.VIDEO) {
-      const eligibility = await this.checkVideoEligibility(callerId);
-      if (!eligibility.eligible) {
-        throw AppError.badRequest(
-          `Video calls require at least ${eligibility.requiredCoins} coins. ` +
-            `You have ${eligibility.currentCoins}. Please recharge.`
-        );
-      }
-    }
-
-    // Check caller wallet
-    const wallet = await WalletService.getWallet(callerId);
-    if (wallet.coins < coinRate) {
-      throw AppError.badRequest(
-        `Insufficient coins. Need at least ${coinRate} coins to start ${type.toLowerCase()} call.`
-      );
-    }
-
-    // Create call record
-    const call = await prisma.call.create({
-      data: {
-        callerId,
-        receiverId,
-        type,
-        status: CallStatus.INITIATED,
-        coinRate,
-        quality,
-        startedAt: new Date(),
-      },
-      include: {
-        caller: {
-          select: {
-            id: true,
-            name: true,
-            profileImage: true,
-            phone: true,
-          },
-        },
-        receiver: {
-          select: {
-            id: true,
-            name: true,
-            profileImage: true,
-            phone: true,
-          },
-        },
-      },
-    });
-
-    // ⭐⭐⭐ SOCKET EMIT — Notify receiver in real-time ⭐⭐⭐
-    const io = getIO();
-    if (io) {
-      try {
-        // Find receiver's socket
-        const { getUserSocketId } = require('../socket');
-        const receiverSocketId = getUserSocketId(receiverId);
-
-        if (receiverSocketId) {
-          const incomingEvent =
-            type === CallType.VIDEO
-              ? 'call:video:incoming'
-              : 'call:voice:incoming';
-
-          io.to(receiverSocketId).emit(incomingEvent, {
-            callId: call.id,
-            callerId,
-            callerName: caller.name,
-            callerImage: caller.profileImage,
-            type,
-            quality,
-            coinRate: call.coinRate,
-          });
-
-          // Also emit to personal room for multi-device
-          io.to(`user:${receiverId}`).emit(incomingEvent, {
-            callId: call.id,
-            callerId,
-            callerName: caller.name,
-            callerImage: caller.profileImage,
-            type,
-            quality,
-            coinRate: call.coinRate,
-          });
-
-          logInfo(`📞 Call socket emitted to receiver ${receiverId} (${type})`);
-        } else {
-          logInfo(`📞 Receiver ${receiverId} offline — FCM only`);
-        }
-      } catch (e) {
-        logError('Socket emit for incoming call failed', e);
-      }
-    }
-
-    // FCM fallback
-    (async () => {
-      try {
-        await NotificationService.sendCallNotification(callerId, receiverId, type);
-      } catch (e) {
-        logError('Call notification failed', e);
-      }
-    })();
-
-    logInfo(
-      `Call initiated: ${call.id} (${type}) from ${callerId} to ${receiverId} @ ${coinRate} coins/min`
-    );
-    return call;
-  }
-
-  // ============================================
-  // Accept Call — Emit to caller
-  // ============================================
-  static async acceptCall(callId, receiverId) {
-    const call = await prisma.call.findUnique({ where: { id: callId } });
-    if (!call) throw AppError.notFound('Call not found');
-
-    if (call.receiverId !== receiverId) {
-      throw AppError.forbidden('Not authorized to accept this call');
-    }
-
-    if (call.status !== CallStatus.INITIATED) {
-      throw AppError.badRequest('Call is not in valid state');
-    }
-
-    const wallet = await WalletService.getWallet(call.callerId);
-    if (wallet.coins < call.coinRate) {
-      throw AppError.badRequest('Caller has insufficient coins');
-    }
-
-    const updated = await prisma.call.update({
-      where: { id: callId },
-      data: {
-        status: CallStatus.CONNECTED,
-        startedAt: new Date(),
-      },
-      include: {
-        caller: { select: { id: true, name: true, profileImage: true } },
-        receiver: { select: { id: true, name: true, profileImage: true } },
-      },
-    });
-
-    // ⭐ Emit ACCEPTED to caller
-    const io = getIO();
-    if (io) {
-      try {
-        io.to(`user:${call.callerId}`).emit('call:accepted', {
-          callId,
-          receiverId,
-        });
-        logInfo(`📞 Call accepted emit to caller ${call.callerId}`);
-      } catch (e) {
-        logError('Socket emit accept failed', e);
-      }
-    }
-
-    logInfo(`Call accepted: ${callId}`);
-    return updated;
-  }
-
-  // ============================================
-  // Reject Call — Emit to caller
-  // ============================================
-  static async rejectCall(callId, userId) {
-    const call = await prisma.call.findUnique({ where: { id: callId } });
-    if (!call) throw AppError.notFound('Call not found');
-
-    if (call.callerId !== userId && call.receiverId !== userId) {
-      throw AppError.forbidden('Not authorized');
-    }
-
-    const updated = await prisma.call.update({
-      where: { id: callId },
-      data: {
-        status: CallStatus.REJECTED,
-        endedAt: new Date(),
-        endedById: userId,
-      },
-    });
-
-    // ⭐ Emit REJECTED to other party
-    const io = getIO();
-    if (io) {
-      try {
-        const targetUserId = call.callerId === userId ? call.receiverId : call.callerId;
-        io.to(`user:${targetUserId}`).emit('call:rejected', {
-          callId,
-          rejectedBy: userId,
-        });
-      } catch (e) {
-        logError('Socket emit reject failed', e);
-      }
-    }
-
-    logInfo(`Call rejected: ${callId}`);
-    return updated;
-  }
-
-  // ============================================
-  // Cancel Call
-  // ============================================
-  static async cancelCall(callId, userId) {
-    const call = await prisma.call.findUnique({ where: { id: callId } });
-    if (!call) throw AppError.notFound('Call not found');
-
-    if (call.callerId !== userId) {
-      throw AppError.forbidden('Only caller can cancel');
-    }
-
-    if (call.status !== CallStatus.INITIATED) {
-      throw AppError.badRequest('Call already handled');
-    }
-
-    const updated = await prisma.call.update({
-      where: { id: callId },
-      data: {
-        status: CallStatus.CANCELLED,
-        endedAt: new Date(),
-        endedById: userId,
-      },
-    });
-
-    // ⭐ Emit CANCELLED to receiver
-    const io = getIO();
-    if (io) {
-      try {
-        io.to(`user:${call.receiverId}`).emit('call:cancelled', {
-          callId,
-          callerId: userId,
-        });
-      } catch (e) {
-        logError('Socket emit cancel failed', e);
-      }
-    }
-
-    return updated;
-  }
-
-  // ============================================
-  // End Call + Billing
-  // ============================================
-  static async endCall(callId, userId) {
-    const call = await prisma.call.findUnique({ where: { id: callId } });
-    if (!call) throw AppError.notFound('Call not found');
-
-    if (call.callerId !== userId && call.receiverId !== userId) {
-      throw AppError.forbidden('Not authorized');
-    }
-
-    if (
-      [CallStatus.ENDED, CallStatus.REJECTED, CallStatus.CANCELLED, CallStatus.MISSED].includes(
-        call.status
-      )
-    ) {
-      return call;
-    }
-
-    const endedAt = new Date();
-    const startedAt = call.startedAt || call.createdAt;
-    const durationSec = Math.max(0, Math.floor((endedAt - startedAt) / 1000));
-    const minutes = Math.max(1, Math.ceil(durationSec / 60));
-
-    let cost = 0;
-    if (call.status === CallStatus.CONNECTED && durationSec > 0) {
-      cost = minutes * call.coinRate;
-    }
-
-    try {
-      const updated = await prisma.$transaction(async (tx) => {
-        const updatedCall = await tx.call.update({
-          where: { id: callId },
-          data: {
-            status: CallStatus.ENDED,
-            endedAt,
-            duration: durationSec,
-            cost,
-            endedById: userId,
-            paymentStatus: cost > 0 ? PaymentStatus.PENDING : PaymentStatus.COMPLETED,
-          },
-        });
-
-        if (cost > 0 && call.status === CallStatus.CONNECTED) {
-          await this.billCall(tx, call, cost, minutes, durationSec);
-        }
-
-        return updatedCall;
-      });
-
-      if (cost > 0) {
-        await prisma.call.update({
-          where: { id: callId },
-          data: { paymentStatus: PaymentStatus.COMPLETED },
-        });
-        updated.paymentStatus = PaymentStatus.COMPLETED;
-      }
-
-      updated.needsReview =
-        call.status === CallStatus.CONNECTED && durationSec >= 30 && cost > 0;
-
-      // ⭐ Emit ENDED to other party
-      const io = getIO();
-      if (io) {
-        try {
-          const targetUserId =
-            call.callerId === userId ? call.receiverId : call.callerId;
-          io.to(`user:${targetUserId}`).emit('call:ended', {
-            callId,
-            endedBy: userId,
-            duration: durationSec,
-            cost,
-          });
-        } catch (e) {
-          logError('Socket emit end failed', e);
-        }
-      }
-
-      logInfo(`Call ended: ${callId}, duration: ${durationSec}s, cost: ${cost} coins`);
-      return updated;
-    } catch (error) {
-      logError('Call end billing failed', error);
-      const updated = await prisma.call.update({
-        where: { id: callId },
-        data: {
-          status: CallStatus.ENDED,
-          endedAt,
-          duration: durationSec,
-          cost,
-          endedById: userId,
-          paymentStatus: PaymentStatus.FAILED,
-        },
-      });
-      return updated;
-    }
-  }
-
-  // ============================================
-  // Bill Call
-  // ============================================
-  // ============================================
-  // ⭐ Bill Call (with subscription support)
-  // ============================================
-  static async billCall(tx, call, cost, minutes, durationSec) {
-    const { callerId, receiverId, type } = call;
-
-    const rates = await this.getCallRates();
-    const commissionPercent = rates.platformCommission;
-
-    // ⭐ STEP 1: Try subscription
-    const subResult = await this.tryUseSubscription(tx, callerId, minutes, type);
-
-    let billableMinutes = minutes;
-    let actualCost = cost;
-
-    if (subResult.used) {
-      billableMinutes = subResult.billableMinutes || 0;
-      actualCost = billableMinutes * call.coinRate;
-
-      logInfo(
-        `Subscription covered ${subResult.freeMinutes} min, billing ${billableMinutes} min`
-      );
-    }
-
-    // ⭐ STEP 2: If nothing to bill, skip wallet deduction
-    if (actualCost <= 0) {
-      logInfo('Call fully covered by subscription');
-      // Still update stats
-      await tx.user.update({
-        where: { id: callerId },
-        data: {
-          totalCalls: { increment: 1 },
-          ...(type === CallType.VOICE
-            ? { totalVoiceMins: { increment: minutes } }
-            : { totalVideoMins: { increment: minutes } }),
-        },
-      });
-
-      // Credit girl (if girl receiver — based on her share)
-      const receiver = await tx.user.findUnique({
-        where: { id: receiverId },
-        select: { id: true, role: true },
-      });
-
-      if (receiver && receiver.role === 'GIRL') {
-        // Girl still gets commission from platform (or subscription fund)
-        // For simplicity, skip here — could add subscription-funded payout
-        await tx.girl.update({
-          where: { userId: receiverId },
-          data: {
-            totalCalls: { increment: 1 },
-            totalVoiceMins: type === CallType.VOICE ? { increment: minutes } : undefined,
-            totalVideoMins: type === CallType.VIDEO ? { increment: minutes } : undefined,
-          },
-        });
-      }
-
-      return;
-    }
-
-    // ⭐ STEP 3: Deduct coins for billable minutes
-    const callerWallet = await tx.wallet.findUnique({ where: { userId: callerId } });
-    if (!callerWallet || callerWallet.coins < actualCost) {
-      throw new Error('Insufficient coins');
-    }
-
-    await tx.wallet.update({
-      where: { userId: callerId },
-      data: {
-        coins: { decrement: actualCost },
-        totalSpent: { increment: actualCost },
-      },
-    });
-
-    await tx.transaction.create({
-      data: {
-        userId: callerId,
-        type: 'DEBIT',
-        category: type === CallType.VOICE ? 'VOICE_CALL' : 'VIDEO_CALL',
-        amount: 0,
-        coins: actualCost,
-        description: `${type} call (${billableMinutes} min${
-          subResult.used ? `, ${subResult.freeMinutes} free` : ''
-        })`,
-        status: 'COMPLETED',
-        balanceAfter: callerWallet.balance,
-        coinsAfter: callerWallet.coins - actualCost,
-        referenceId: call.id,
-        referenceModel: 'Call',
-      },
-    });
-
-    // ⭐ STEP 4: Credit girl (only from actual cost)
-    const receiver = await tx.user.findUnique({
-      where: { id: receiverId },
-      select: { id: true, role: true },
-    });
-
-    if (receiver && receiver.role === 'GIRL') {
-      const girlEarnings = Math.floor((actualCost * (100 - commissionPercent)) / 100);
-
-      if (girlEarnings > 0) {
-        const receiverWallet = await tx.wallet.upsert({
-          where: { userId: receiverId },
-          update: {
-            coins: { increment: girlEarnings },
-            totalEarned: { increment: girlEarnings },
-          },
-          create: {
-            userId: receiverId,
-            coins: girlEarnings,
-            totalEarned: girlEarnings,
-          },
-        });
-
-        await tx.transaction.create({
-          data: {
-            userId: receiverId,
-            type: 'CREDIT',
-            category: 'CALL_EARNING',
-            amount: 0,
-            coins: girlEarnings,
-            description: `${type} call earnings (${minutes} min)`,
-            status: 'COMPLETED',
-            balanceAfter: receiverWallet.balance,
-            coinsAfter: receiverWallet.coins,
-            referenceId: call.id,
-            referenceModel: 'Call',
-          },
-        });
-
-        await tx.girl.update({
-          where: { userId: receiverId },
-          data: {
-            totalCalls: { increment: 1 },
-            totalVoiceMins: type === CallType.VOICE ? { increment: minutes } : undefined,
-            totalVideoMins: type === CallType.VIDEO ? { increment: minutes } : undefined,
-            totalCoinsEarned: { increment: girlEarnings },
-            earningsTotal: { increment: girlEarnings },
-            earningsToday: { increment: girlEarnings },
-            earningsThisWeek: { increment: girlEarnings },
-            earningsThisMonth: { increment: girlEarnings },
-          },
-        });
-
-        logInfo(`Girl ${receiverId} earned ${girlEarnings} coins`);
-      }
-    }
-
-    // Update caller stats
-    await tx.user.update({
-      where: { id: callerId },
-      data: {
-        totalCalls: { increment: 1 },
-        totalSpent: { increment: actualCost },
-        ...(type === CallType.VOICE
-          ? { totalVoiceMins: { increment: minutes } }
-          : { totalVideoMins: { increment: minutes } }),
-      },
-    });
-
-    if (!receiver || receiver.role !== 'GIRL') {
-      await tx.user.update({
-        where: { id: receiverId },
-        data: { totalCalls: { increment: 1 } },
-      });
-    }
-  }
-  //  ============================================
-  // Get Call History
-  // ============================================
-  static async getCallHistory(userId, { page = 1, limit = 20, type, status } = {}) {
-    const where = {
-      OR: [{ callerId: userId }, { receiverId: userId }],
-      deletedAt: null,
-    };
-
-    if (type) where.type = type;
-    if (status) where.status = status;
-
-    const skip = (page - 1) * limit;
-
-    const [calls, total] = await Promise.all([
-      prisma.call.findMany({
-        where,
-        include: {
-          caller: { select: { id: true, name: true, profileImage: true } },
-          receiver: { select: { id: true, name: true, profileImage: true } },
-        },
-        orderBy: { createdAt: 'desc' },
-        skip,
-        take: limit,
-      }),
-      prisma.call.count({ where }),
-    ]);
-
-    const enriched = calls.map((c) => ({
-      ...c,
-      isOutgoing: c.callerId === userId,
-      canReview:
-        c.status === CallStatus.ENDED && c.duration >= 30 && c.callerId === userId,
-    }));
-
-    return {
-      data: enriched,
-      pagination: helpers.buildPagination(page, limit, total),
-    };
-  }
-
-  // ============================================
-  // Get Call By ID
-  // ============================================
-  static async getCallById(callId, userId) {
-    const call = await prisma.call.findUnique({
-      where: { id: callId },
-      include: {
-        caller: { select: { id: true, name: true, profileImage: true } },
-        receiver: { select: { id: true, name: true, profileImage: true } },
-      },
-    });
-
-    if (!call) throw AppError.notFound('Call not found');
-    if (call.callerId !== userId && call.receiverId !== userId) {
-      throw AppError.forbidden('Not authorized');
-    }
-
-    return call;
-  }
-
-  // ============================================
-  // Get Active Call
-  // ============================================
-  static async getActiveCall(userId) {
-    return prisma.call.findFirst({
-      where: {
-        OR: [{ callerId: userId }, { receiverId: userId }],
-        status: { in: [CallStatus.INITIATED, CallStatus.CONNECTED] },
-        deletedAt: null,
-      },
-      include: {
-        caller: { select: { id: true, name: true, profileImage: true } },
-        receiver: { select: { id: true, name: true, profileImage: true } },
-      },
+      include: { plan: true },
     });
   }
 
   // ============================================
-  // Get Missed Calls
+  // 4. Try to use subscription
   // ============================================
-  static async getMissedCalls(userId) {
-    return prisma.call.findMany({
-      where: {
-        receiverId: userId,
-        status: CallStatus.MISSED,
-        createdAt: { gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) },
-      },
-      include: {
-        caller: { select: { id: true, name: true, profileImage: true } },
-      },
-      orderBy: { createdAt: 'desc' },
-      take: 50,
-    });
-  }
-
-  // ============================================
-  // Get Call Stats
-  // ============================================
-  static async getCallStats(userId) {
-    const [total, missed, totalDuration, totalCost, byType] = await Promise.all([
-      prisma.call.count({
-        where: {
-          OR: [{ callerId: userId }, { receiverId: userId }],
-          status: CallStatus.ENDED,
-        },
-      }),
-      prisma.call.count({
-        where: { receiverId: userId, status: CallStatus.MISSED },
-      }),
-      prisma.call.aggregate({
-        where: {
-          OR: [{ callerId: userId }, { receiverId: userId }],
-          status: CallStatus.ENDED,
-        },
-        _sum: { duration: true },
-      }),
-      prisma.call.aggregate({
-        where: {
-          callerId: userId,
-          status: CallStatus.ENDED,
-          paymentStatus: PaymentStatus.COMPLETED,
-        },
-        _sum: { cost: true },
-      }),
-      prisma.call.groupBy({
-        by: ['type'],
-        where: {
-          OR: [{ callerId: userId }, { receiverId: userId }],
-          status: CallStatus.ENDED,
-        },
-        _count: { _all: true },
-        _sum: { duration: true },
-      }),
-    ]);
-
-    return {
-      totalCalls: total,
-      missedCalls: missed,
-      totalDuration: totalDuration._sum.duration || 0,
-      totalCost: totalCost._sum.cost || 0,
-      byType,
-    };
-  }
-
-  // ============================================
-  // Mark as Missed
-  // ============================================
-  static async markAsMissed(callId) {
-    const call = await prisma.call.findUnique({ where: { id: callId } });
-    if (!call) return null;
-
-    if (call.status === CallStatus.INITIATED) {
-      const updated = await prisma.call.update({
-        where: { id: callId },
-        data: { status: CallStatus.MISSED, endedAt: new Date() },
-      });
-
-      // ⭐ Emit missed to both
-      const io = getIO();
-      if (io) {
-        try {
-          io.to(`user:${call.callerId}`).emit('call:missed', { callId });
-          io.to(`user:${call.receiverId}`).emit('call:missed', { callId });
-        } catch (e) {}
-      }
-
-      logInfo(`Call marked as missed: ${callId}`);
-      return updated;
-    }
-
-    return call;
-  }
-
-  // ============================================
-  // Save Recording
-  // ============================================
-  static async saveRecording(callId, userId, { url, duration, size }) {
-    const call = await prisma.call.findUnique({ where: { id: callId } });
-    if (!call) throw AppError.notFound('Call not found');
-
-    if (call.callerId !== userId && call.receiverId !== userId) {
-      throw AppError.forbidden('Not authorized');
-    }
-
-    return prisma.call.update({
-      where: { id: callId },
-      data: {
-        recordingUrl: url,
-        recordingSize: size || null,
-      },
-    });
-  }
-
-  // ============================================
-  // ADMIN — Update Global Call Rates
-  // ============================================
-  static async updateCallRates({ voiceRate, videoRate, minCoinsForVideo, platformCommission }) {
-    const updates = [];
-
-    if (voiceRate !== undefined) {
-      updates.push(
-        prisma.setting.upsert({
-          where: { key: 'COIN_VOICE_COST_PER_MINUTE' },
-          update: { value: voiceRate },
-          create: {
-            key: 'COIN_VOICE_COST_PER_MINUTE',
-            value: voiceRate,
-            type: 'NUMBER',
-            category: 'COINS',
-            description: 'Default voice call cost per minute',
-          },
-        })
-      );
-    }
-
-    if (videoRate !== undefined) {
-      updates.push(
-        prisma.setting.upsert({
-          where: { key: 'COIN_VIDEO_COST_PER_MINUTE' },
-          update: { value: videoRate },
-          create: {
-            key: 'COIN_VIDEO_COST_PER_MINUTE',
-            value: videoRate,
-            type: 'NUMBER',
-            category: 'COINS',
-            description: 'Default video call cost per minute',
-          },
-        })
-      );
-    }
-
-    if (minCoinsForVideo !== undefined) {
-      updates.push(
-        prisma.setting.upsert({
-          where: { key: 'CALL_MIN_COINS_FOR_VIDEO' },
-          update: { value: minCoinsForVideo },
-          create: {
-            key: 'CALL_MIN_COINS_FOR_VIDEO',
-            value: minCoinsForVideo,
-            type: 'NUMBER',
-            category: 'CALLS',
-            description: 'Minimum coins to unlock video calls',
-          },
-        })
-      );
-    }
-
-    if (platformCommission !== undefined) {
-      if (platformCommission < 0 || platformCommission > 100) {
-        throw AppError.badRequest('Platform commission must be 0-100');
-      }
-      updates.push(
-        prisma.setting.upsert({
-          where: { key: 'CALL_PLATFORM_COMMISSION' },
-          update: { value: platformCommission },
-          create: {
-            key: 'CALL_PLATFORM_COMMISSION',
-            value: platformCommission,
-            type: 'NUMBER',
-            category: 'CALLS',
-            description: 'Platform commission % from call earnings',
-          },
-        })
-      );
-    }
-
-    await Promise.all(updates);
-    return this.getCallRates();
-  }
-
-  // ============================================
-  // ADMIN — Get All Calls
-  // ============================================
-  static async getAllCalls({ page = 1, limit = 20, type, status, userId } = {}) {
-    const where = { deletedAt: null };
-    if (type) where.type = type;
-    if (status) where.status = status;
-    if (userId) {
-      where.OR = [{ callerId: userId }, { receiverId: userId }];
-    }
-
-    const skip = (page - 1) * limit;
-
-    const [calls, total] = await Promise.all([
-      prisma.call.findMany({
-        where,
-        include: {
-          caller: { select: { id: true, name: true, phone: true, profileImage: true } },
-          receiver: { select: { id: true, name: true, phone: true, profileImage: true } },
-        },
-        orderBy: { createdAt: 'desc' },
-        skip,
-        take: limit,
-      }),
-      prisma.call.count({ where }),
-    ]);
-
-    return {
-      data: calls,
-      pagination: helpers.buildPagination(page, limit, total),
-    };
-  }
-    // ============================================
-  // ⭐ HELPER: Try subscription for call (voice/video)
-  // ============================================
-  static async tryUseSubscription(tx, userId, minutes, callType) {
+  static async tryUseSubscription(tx, userId, messageType, isMedia) {
     const sub = await tx.subscription.findFirst({
       where: {
         userId,
@@ -1042,27 +105,14 @@ class CallService {
     });
     if (!plan) return { used: false, reason: 'no_plan' };
 
-    const isVoice = callType === 'VOICE';
+    const freeMessagesAllowed = plan.freeMessages;
+    const unlimited = freeMessagesAllowed === -1;
+    const used = usage.messagesUsed || 0;
 
-    const freeMinutes = isVoice
-      ? plan.freeVoiceMinutes || 0
-      : plan.freeVideoMinutes || 0;
-
-    const usedKey = isVoice ? 'voiceMinutesUsed' : 'videoMinutesUsed';
-    const used = usage[usedKey] || 0;
-
-    // Unlimited (negative = unlimited)
-    const unlimited = freeMinutes === -1;
-
-    if (unlimited || used < freeMinutes) {
-      // Remaining free minutes
-      const remaining = unlimited ? minutes : freeMinutes - used;
-      const freeToUse = Math.min(minutes, remaining);
-      const billableMinutes = minutes - freeToUse;
-
+    if (unlimited || used < freeMessagesAllowed) {
       const newUsage = {
         ...usage,
-        [usedKey]: used + freeToUse,
+        messagesUsed: used + 1,
       };
 
       await tx.subscription.update({
@@ -1072,18 +122,1121 @@ class CallService {
 
       return {
         used: true,
-        freeMinutes: freeToUse,
-        billableMinutes,
+        subscriptionId: sub.id,
         planName: plan.name,
       };
     }
 
-    return {
-      used: false,
-      reason: 'limit_reached',
-      billableMinutes: minutes,
+    return { used: false, reason: 'limit_reached' };
+  }
+
+  // ============================================
+  // 5. Create/Get Direct Chat
+  // ============================================
+  static async createDirectChat(userId, otherUserId) {
+    if (userId === otherUserId) {
+      throw AppError.badRequest('Cannot create chat with yourself');
+    }
+
+    const other = await prisma.user.findUnique({ where: { id: otherUserId } });
+    if (!other) throw AppError.notFound('User not found');
+
+    const blocked = await prisma.blockedUser.findFirst({
+      where: {
+        OR: [
+          { userId, blockedId: otherUserId },
+          { userId: otherUserId, blockedId: userId },
+        ],
+        deletedAt: null,
+      },
+    });
+    if (blocked) throw AppError.forbidden('Cannot chat with this user');
+
+    const sortedIds = [userId, otherUserId].sort();
+    const directKey = `direct:${sortedIds[0]}:${sortedIds[1]}`;
+
+    let chat = await prisma.chat.findFirst({
+      where: {
+        directKey,
+        deletedAt: null,
+      },
+      include: {
+        participants: {
+          include: {
+            user: {
+              select: {
+                id: true,
+                name: true,
+                profileImage: true,
+                isOnline: true,
+                lastSeen: true,
+              },
+            },
+          },
+        },
+      },
+    });
+
+    if (chat) return chat;
+
+    try {
+      chat = await prisma.chat.create({
+        data: {
+          type: ChatType.DIRECT,
+          directKey,
+          participants: {
+            create: [{ userId }, { userId: otherUserId }],
+          },
+        },
+        include: {
+          participants: {
+            include: {
+              user: {
+                select: {
+                  id: true,
+                  name: true,
+                  profileImage: true,
+                  isOnline: true,
+                  lastSeen: true,
+                },
+              },
+            },
+          },
+        },
+      });
+
+      return chat;
+    } catch (e) {
+      if (e.code === 'P2002') {
+        chat = await prisma.chat.findFirst({
+          where: { directKey, deletedAt: null },
+          include: {
+            participants: {
+              include: {
+                user: {
+                  select: {
+                    id: true,
+                    name: true,
+                    profileImage: true,
+                    isOnline: true,
+                    lastSeen: true,
+                  },
+                },
+              },
+            },
+          },
+        });
+        if (chat) return chat;
+      }
+      throw e;
+    }
+  }
+
+  // ============================================
+  // 6. Create Group Chat
+  // ============================================
+  static async createGroupChat(userId, name, participantIds = []) {
+    if (!name || name.trim().length < 2) {
+      throw AppError.badRequest('Group name must be at least 2 characters');
+    }
+
+    const uniqueIds = [...new Set(participantIds.filter((id) => id !== userId))];
+
+    if (uniqueIds.length < 1) {
+      throw AppError.badRequest('At least 1 other participant required');
+    }
+
+    const users = await prisma.user.findMany({
+      where: { id: { in: uniqueIds } },
+      select: { id: true },
+    });
+    if (users.length !== uniqueIds.length) {
+      throw AppError.badRequest('Some participants not found');
+    }
+
+    return prisma.chat.create({
+      data: {
+        type: ChatType.GROUP,
+        name: name.trim(),
+        participants: {
+          create: [
+            { userId, isAdmin: true },
+            ...uniqueIds.map((id) => ({ userId: id })),
+          ],
+        },
+      },
+      include: {
+        participants: {
+          include: {
+            user: {
+              select: {
+                id: true,
+                name: true,
+                profileImage: true,
+                isOnline: true,
+              },
+            },
+          },
+        },
+      },
+    });
+  }
+
+  // ============================================
+  // 7. Get User's Chats
+  // ============================================
+  static async getUserChats(userId, { page = 1, limit = 20 } = {}) {
+    const skip = (page - 1) * limit;
+
+    const where = {
+      isActive: true,
+      deletedAt: null,
+      participants: { some: { userId } },
     };
+
+    const [chats, total] = await Promise.all([
+      prisma.chat.findMany({
+        where,
+        include: {
+          participants: {
+            include: {
+              user: {
+                select: {
+                  id: true,
+                  name: true,
+                  profileImage: true,
+                  isOnline: true,
+                  lastSeen: true,
+                },
+              },
+            },
+          },
+        },
+        orderBy: { lastMessageAt: 'desc' },
+        skip,
+        take: limit,
+      }),
+      prisma.chat.count({ where }),
+    ]);
+
+    const chatIds = chats.map((c) => c.id);
+
+    const [lastMessages, unreadGroups] = await Promise.all([
+      prisma.message.findMany({
+        where: { chatId: { in: chatIds }, deletedAt: null },
+        orderBy: { createdAt: 'desc' },
+        distinct: ['chatId'],
+        include: {
+          sender: { select: { id: true, name: true, profileImage: true } },
+        },
+      }),
+      prisma.message.groupBy({
+        by: ['chatId'],
+        where: {
+          chatId: { in: chatIds },
+          senderId: { not: userId },
+          isRead: false,
+          deletedAt: null,
+        },
+        _count: { _all: true },
+      }),
+    ]);
+
+    const lastMsgMap = {};
+    lastMessages.forEach((m) => (lastMsgMap[m.chatId] = m));
+
+    const unreadMap = {};
+    unreadGroups.forEach((g) => (unreadMap[g.chatId] = g._count._all));
+
+    const enriched = chats.map((chat) => ({
+      ...chat,
+      lastMessage: lastMsgMap[chat.id] || null,
+      unreadCount: unreadMap[chat.id] || 0,
+    }));
+
+    return {
+      data: enriched,
+      pagination: helpers.buildPagination(page, limit, total),
+    };
+  }
+
+  // ============================================
+  // 8. Get Chat By ID
+  // ============================================
+  static async getChatById(chatId, userId) {
+    const chat = await prisma.chat.findUnique({
+      where: { id: chatId },
+      include: {
+        participants: {
+          include: {
+            user: {
+              select: {
+                id: true,
+                name: true,
+                profileImage: true,
+                isOnline: true,
+                lastSeen: true,
+              },
+            },
+          },
+        },
+      },
+    });
+
+    if (!chat || chat.deletedAt) throw AppError.notFound('Chat not found');
+    if (!chat.participants.some((p) => p.userId === userId)) {
+      throw AppError.forbidden('Not a participant of this chat');
+    }
+
+    return chat;
+  }
+
+  // ============================================
+  // 9. Send Message
+  // ============================================
+  static async sendMessage(
+    chatId,
+    senderId,
+    { content, type = 'TEXT', mediaUrl = null, replyToId = null }
+  ) {
+    if (!content && !mediaUrl) {
+      throw AppError.badRequest('Message content or media required');
+    }
+
+    const chat = await prisma.chat.findUnique({
+      where: { id: chatId },
+      include: { participants: true },
+    });
+
+    if (!chat || !chat.isActive) throw AppError.notFound('Chat not found');
+    if (!chat.participants.some((p) => p.userId === senderId)) {
+      throw AppError.forbidden('Not a participant of this chat');
+    }
+
+    const costs = await this.getChatCosts();
+    const isMedia = ['IMAGE', 'VIDEO', 'AUDIO', 'GIF', 'FILE'].includes(type);
+    const baseCoinCost = isMedia ? costs.mediaCost : costs.messageCost;
+
+    const sender = await prisma.user.findUnique({
+      where: { id: senderId },
+      select: { id: true, role: true, name: true },
+    });
+    if (!sender) throw AppError.notFound('Sender not found');
+
+    const isSenderGirl = sender.role === 'GIRL';
+
+    let girlReceiver = null;
+    if (chat.type === 'DIRECT') {
+      const otherParticipant = chat.participants.find(
+        (p) => p.userId !== senderId
+      );
+      if (otherParticipant) {
+        const otherUser = await prisma.user.findUnique({
+          where: { id: otherParticipant.userId },
+          select: { id: true, role: true, name: true },
+        });
+        if (otherUser?.role === 'GIRL') {
+          girlReceiver = otherUser;
+        }
+      }
+    }
+
+    let coinCost = baseCoinCost;
+    if (!isSenderGirl && girlReceiver && !isMedia) {
+      coinCost = await this.getGirlMessageRate(girlReceiver.id);
+    }
+
+    let message = null;
+    let girlEarning = 0;
+    let subscriptionUsed = false;
+
+    await prisma.$transaction(async (tx) => {
+      // Try subscription first
+      if (!isSenderGirl && coinCost > 0) {
+        const subResult = await this.tryUseSubscription(
+          tx,
+          senderId,
+          type,
+          isMedia
+        );
+
+        if (subResult.used) {
+          subscriptionUsed = true;
+          logInfo(
+            `Subscription used for message by ${senderId} (plan: ${subResult.planName})`
+          );
+        }
+      }
+
+      // Deduct coins if not covered
+      if (!isSenderGirl && coinCost > 0 && !subscriptionUsed) {
+        const updated = await tx.wallet.updateMany({
+          where: {
+            userId: senderId,
+            coins: { gte: coinCost },
+          },
+          data: {
+            coins: { decrement: coinCost },
+            totalSpent: { increment: coinCost },
+          },
+        });
+
+        if (updated.count === 0) {
+          throw AppError.badRequest(
+            `Insufficient coins. Need ${coinCost} coins.`
+          );
+        }
+
+        const wallet = await tx.wallet.findUnique({ where: { userId: senderId } });
+
+        await tx.transaction.create({
+          data: {
+            userId: senderId,
+            type: 'DEBIT',
+            category: 'MESSAGE_COST',
+            amount: 0,
+            coins: coinCost,
+            description: `Message sent (${type})`,
+            status: 'COMPLETED',
+            balanceAfter: wallet.balance,
+            coinsAfter: wallet.coins,
+            referenceModel: 'Chat',
+            referenceId: chatId,
+          },
+        });
+      }
+
+      // Create message
+      message = await tx.message.create({
+        data: {
+          chatId,
+          senderId,
+          content: content || '',
+          type: type || MessageType.TEXT,
+          mediaUrl,
+          replyToId,
+        },
+        include: {
+          sender: { select: { id: true, name: true, profileImage: true } },
+        },
+      });
+
+      // Credit girl
+      if (girlReceiver && !isSenderGirl && coinCost > 0 && !subscriptionUsed) {
+        const girlPercent = costs.girlEarningPercent;
+        girlEarning = Math.max(1, Math.floor((coinCost * girlPercent) / 100));
+
+        const girlWallet = await tx.wallet.upsert({
+          where: { userId: girlReceiver.id },
+          update: {
+            coins: { increment: girlEarning },
+            totalEarned: { increment: girlEarning },
+          },
+          create: {
+            userId: girlReceiver.id,
+            coins: girlEarning,
+            totalEarned: girlEarning,
+          },
+        });
+
+        await tx.transaction.create({
+          data: {
+            userId: girlReceiver.id,
+            type: 'CREDIT',
+            category: 'CHAT_EARNING',
+            amount: 0,
+            coins: girlEarning,
+            description: `Chat message earnings (${type})`,
+            status: 'COMPLETED',
+            balanceAfter: girlWallet.balance,
+            coinsAfter: girlWallet.coins,
+            referenceModel: 'Message',
+            referenceId: message.id,
+          },
+        });
+
+        await tx.girl.update({
+          where: { userId: girlReceiver.id },
+          data: {
+            totalMessages: { increment: 1 },
+            totalCoinsEarned: { increment: girlEarning },
+            earningsTotal: { increment: girlEarning },
+            earningsToday: { increment: girlEarning },
+            earningsThisWeek: { increment: girlEarning },
+            earningsThisMonth: { increment: girlEarning },
+          },
+        });
+      }
+
+      // Update chat
+      await tx.chat.update({
+        where: { id: chatId },
+        data: { lastMessageAt: new Date(), lastMessageId: message.id },
+      });
+
+      // Sender stats
+      await tx.user.update({
+        where: { id: senderId },
+        data: { totalMessages: { increment: 1 } },
+      });
+
+      if (isSenderGirl) {
+        await tx.girl.update({
+          where: { userId: senderId },
+          data: { totalMessages: { increment: 1 } },
+        });
+      }
+    });
+
+    // Notifications
+    (async () => {
+      try {
+        for (const participant of chat.participants) {
+          if (participant.userId !== senderId) {
+            await NotificationService.sendChatNotification(
+              senderId,
+              participant.userId,
+              message
+            );
+          }
+        }
+      } catch (e) {
+        logError('Chat notification failed', e);
+      }
+    })();
+
+    logInfo(
+      `Message sent in chat ${chatId} by ${senderId} (cost: ${coinCost}, girl earning: ${girlEarning}, sub: ${subscriptionUsed})`
+    );
+
+    return { ...message, coinCost, subscriptionUsed };
+  }
+
+  // ============================================
+  // 10. ⭐ GET MESSAGES — FULLY FIXED
+  // ============================================
+  static async getMessages(chatId, userId, { page = 1, limit = 50 } = {}) {
+    // Verify participant
+    const participant = await prisma.chatParticipant.findUnique({
+      where: { chatId_userId: { chatId, userId } },
+    });
+    if (!participant) {
+      throw AppError.forbidden('Not a participant');
+    }
+
+    const skip = (page - 1) * limit;
+
+    // ⭐ ROBUST WHERE (no deletedFor filter — filter in JS)
+    const where = {
+      chatId,
+      deletedAt: null,
+    };
+
+    const [messages, total] = await Promise.all([
+      prisma.message.findMany({
+        where,
+        include: {
+          sender: {
+            select: { id: true, name: true, profileImage: true },
+          },
+          reactions: true,
+        },
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: limit,
+      }),
+      prisma.message.count({ where }),
+    ]);
+
+    // ⭐ JS-SIDE FILTER for deletedFor
+    const filtered = messages.filter((m) => {
+      if (!m.deletedFor) return true;
+      if (!Array.isArray(m.deletedFor)) return true;
+      if (m.deletedFor.length === 0) return true;
+      return !m.deletedFor.includes(userId);
+    });
+
+    // Reverse for chronological order
+    filtered.reverse();
+
+    // Debug log
+    console.log('📨 getMessages:', {
+      chatId,
+      userId,
+      totalFromDB: total,
+      fetched: messages.length,
+      afterDeletedFilter: filtered.length,
+    });
+
+    return {
+      data: filtered,
+      pagination: helpers.buildPagination(page, limit, total),
+    };
+  }
+
+  // ============================================
+  // 11. Mark As Read
+  // ============================================
+  static async markAsRead(chatId, userId) {
+    const result = await prisma.message.updateMany({
+      where: {
+        chatId,
+        senderId: { not: userId },
+        isRead: false,
+      },
+      data: {
+        isRead: true,
+        readAt: new Date(),
+      },
+    });
+
+    return { count: result.count };
+  }
+
+  // ============================================
+  // 12. Edit Message
+  // ============================================
+  static async editMessage(messageId, userId, newContent) {
+    const message = await prisma.message.findUnique({
+      where: { id: messageId },
+    });
+    if (!message) throw AppError.notFound('Message not found');
+    if (message.senderId !== userId) {
+      throw AppError.forbidden('Only sender can edit');
+    }
+    if (message.isDeletedForAll) {
+      throw AppError.badRequest('Cannot edit deleted message');
+    }
+
+    return prisma.message.update({
+      where: { id: messageId },
+      data: {
+        content: newContent,
+        isEdited: true,
+        editedAt: new Date(),
+      },
+    });
+  }
+
+  // ============================================
+  // 13. Delete Message (for me)
+  // ============================================
+  static async deleteMessageForMe(messageId, userId) {
+    const message = await prisma.message.findUnique({
+      where: { id: messageId },
+    });
+    if (!message) throw AppError.notFound('Message not found');
+
+    const currentDeletedFor = Array.isArray(message.deletedFor)
+      ? message.deletedFor
+      : [];
+
+    const deletedFor = Array.from(new Set([...currentDeletedFor, userId]));
+
+    return prisma.message.update({
+      where: { id: messageId },
+      data: { deletedFor },
+    });
+  }
+
+  // ============================================
+  // 14. Delete Message (for everyone)
+  // ============================================
+  static async deleteMessageForAll(messageId, userId) {
+    const message = await prisma.message.findUnique({
+      where: { id: messageId },
+    });
+    if (!message) throw AppError.notFound('Message not found');
+    if (message.senderId !== userId) {
+      throw AppError.forbidden('Only sender can delete for everyone');
+    }
+
+    return prisma.message.update({
+      where: { id: messageId },
+      data: {
+        isDeletedForAll: true,
+        content: 'This message was deleted',
+        mediaUrl: null,
+      },
+    });
+  }
+
+  // ============================================
+  // 15. Add Reaction
+  // ============================================
+  static async addReaction(messageId, userId, reaction) {
+    if (!reaction || reaction.length > 10) {
+      throw AppError.badRequest('Invalid reaction');
+    }
+
+    return prisma.messageReaction.upsert({
+      where: { messageId_userId: { messageId, userId } },
+      update: { reaction },
+      create: { messageId, userId, reaction },
+    });
+  }
+
+  // ============================================
+  // 16. Remove Reaction
+  // ============================================
+  static async removeReaction(messageId, userId) {
+    await prisma.messageReaction.deleteMany({
+      where: { messageId, userId },
+    });
+    return { message: 'Reaction removed' };
+  }
+
+  // ============================================
+  // 17. Add Participants
+  // ============================================
+  static async addParticipants(chatId, adminId, userIds = []) {
+    const chat = await prisma.chat.findUnique({
+      where: { id: chatId },
+      include: { participants: true },
+    });
+
+    if (!chat) throw AppError.notFound('Chat not found');
+    if (chat.type !== ChatType.GROUP) throw AppError.badRequest('Not a group chat');
+
+    const admin = chat.participants.find((p) => p.userId === adminId);
+    if (!admin || !admin.isAdmin) throw AppError.forbidden('Only admin can add');
+
+    const existingIds = chat.participants.map((p) => p.userId);
+    const newIds = userIds.filter((id) => !existingIds.includes(id));
+
+    if (newIds.length === 0) return chat;
+
+    await prisma.chatParticipant.createMany({
+      data: newIds.map((id) => ({ chatId, userId: id })),
+    });
+
+    return this.getChatById(chatId, adminId);
+  }
+
+  // ============================================
+  // 18. Remove Participant
+  // ============================================
+  static async removeParticipant(chatId, adminId, userId) {
+    const chat = await prisma.chat.findUnique({
+      where: { id: chatId },
+      include: { participants: true },
+    });
+
+    if (!chat) throw AppError.notFound('Chat not found');
+    if (chat.type !== ChatType.GROUP) throw AppError.badRequest('Not a group chat');
+
+    const admin = chat.participants.find((p) => p.userId === adminId);
+    if (!admin || !admin.isAdmin) throw AppError.forbidden('Only admin can remove');
+    if (adminId === userId) throw AppError.badRequest('Admin cannot remove self');
+
+    await prisma.chatParticipant.deleteMany({
+      where: { chatId, userId },
+    });
+
+    return { message: 'Participant removed' };
+  }
+
+  // ============================================
+  // 19. Leave Group
+  // ============================================
+  static async leaveGroup(chatId, userId) {
+    const chat = await prisma.chat.findUnique({
+      where: { id: chatId },
+      include: { participants: true },
+    });
+
+    if (!chat) throw AppError.notFound('Chat not found');
+    if (chat.type !== ChatType.GROUP) throw AppError.badRequest('Not a group chat');
+
+    await prisma.chatParticipant.deleteMany({ where: { chatId, userId } });
+
+    const remaining = await prisma.chatParticipant.count({ where: { chatId } });
+    if (remaining === 0) {
+      await prisma.chat.update({
+        where: { id: chatId },
+        data: { isActive: false, deletedAt: new Date() },
+      });
+    }
+
+    return { message: 'Left group' };
+  }
+
+  // ============================================
+  // 20. Get Total Unread Count
+  // ============================================
+  static async getTotalUnreadCount(userId) {
+    const count = await prisma.message.count({
+      where: {
+        chat: {
+          participants: { some: { userId } },
+          isActive: true,
+        },
+        senderId: { not: userId },
+        isRead: false,
+        deletedAt: null,
+      },
+    });
+
+    return count;
+  }
+
+  // ============================================
+  // 21. Search Messages
+  // ============================================
+  static async searchMessages(userId, query, chatId = null) {
+    if (!query || query.length < 2) {
+      throw AppError.badRequest('Search query too short');
+    }
+
+    const where = {
+      content: { contains: query, mode: 'insensitive' },
+      deletedAt: null,
+      chat: {
+        participants: { some: { userId } },
+        isActive: true,
+      },
+    };
+
+    if (chatId) where.chatId = chatId;
+
+    return prisma.message.findMany({
+      where,
+      include: {
+        sender: { select: { id: true, name: true, profileImage: true } },
+        chat: { select: { id: true, name: true, type: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 50,
+    });
+  }
+
+  // ============================================
+  // 22. Delete Chat (soft)
+  // ============================================
+  static async deleteChat(chatId, userId) {
+    const chat = await prisma.chat.findUnique({ where: { id: chatId } });
+    if (!chat) throw AppError.notFound('Chat not found');
+
+    const participant = await prisma.chatParticipant.findUnique({
+      where: { chatId_userId: { chatId, userId } },
+    });
+    if (!participant) throw AppError.forbidden('Not a participant');
+
+    await prisma.chatParticipant.delete({
+      where: { chatId_userId: { chatId, userId } },
+    });
+
+    const remaining = await prisma.chatParticipant.count({ where: { chatId } });
+    if (remaining === 0) {
+      await prisma.chat.update({
+        where: { id: chatId },
+        data: { isActive: false, deletedAt: new Date() },
+      });
+    }
+
+    return { message: 'Chat deleted' };
+  }
+
+  // ============================================
+  // 23. Admin — Get All Chats
+  // ============================================
+  static async getAllChats({
+    page = 1,
+    limit = 20,
+    type,
+    search,
+    userId,
+  } = {}) {
+    const where = { deletedAt: null };
+    if (type) where.type = type;
+    if (userId) {
+      where.participants = { some: { userId } };
+    }
+    if (search) {
+      where.OR = [
+        { name: { contains: search, mode: 'insensitive' } },
+        { description: { contains: search, mode: 'insensitive' } },
+      ];
+    }
+
+    const skip = (page - 1) * limit;
+
+    const [chats, total] = await Promise.all([
+      prisma.chat.findMany({
+        where,
+        include: {
+          participants: {
+            include: {
+              user: {
+                select: {
+                  id: true,
+                  name: true,
+                  phone: true,
+                  profileImage: true,
+                  role: true,
+                },
+              },
+            },
+          },
+          _count: { select: { messages: true } },
+        },
+        orderBy: { lastMessageAt: 'desc' },
+        skip,
+        take: limit,
+      }),
+      prisma.chat.count({ where }),
+    ]);
+
+    const enriched = chats.map((c) => ({
+      ...c,
+      messageCount: c._count.messages,
+      _count: undefined,
+    }));
+
+    return {
+      data: enriched,
+      pagination: helpers.buildPagination(page, limit, total),
+    };
+  }
+
+  // ============================================
+  // 24. Admin — Get Messages of a Chat
+  // ============================================
+  static async getChatMessagesAdmin(chatId, { page = 1, limit = 50 } = {}) {
+    const chat = await prisma.chat.findUnique({ where: { id: chatId } });
+    if (!chat) throw AppError.notFound('Chat not found');
+
+    const skip = (page - 1) * limit;
+
+    const [messages, total] = await Promise.all([
+      prisma.message.findMany({
+        where: { chatId, deletedAt: null },
+        include: {
+          sender: {
+            select: { id: true, name: true, profileImage: true, role: true },
+          },
+        },
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: limit,
+      }),
+      prisma.message.count({ where: { chatId, deletedAt: null } }),
+    ]);
+
+    messages.reverse();
+
+    return {
+      data: messages,
+      pagination: helpers.buildPagination(page, limit, total),
+    };
+  }
+
+  // ============================================
+  // 25. Forward Message
+  // ============================================
+  static async forwardMessage(messageId, userId, targetChatIds = []) {
+    if (!targetChatIds || targetChatIds.length === 0) {
+      throw AppError.badRequest('At least one target chat required');
+    }
+
+    const original = await prisma.message.findUnique({
+      where: { id: messageId },
+      include: { chat: { include: { participants: true } } },
+    });
+
+    if (!original) throw AppError.notFound('Message not found');
+    if (original.isDeletedForAll) {
+      throw AppError.badRequest('Cannot forward deleted message');
+    }
+
+    if (!original.chat.participants.some((p) => p.userId === userId)) {
+      throw AppError.forbidden('Not authorized');
+    }
+
+    const targetChats = await prisma.chat.findMany({
+      where: { id: { in: targetChatIds } },
+      include: { participants: true },
+    });
+
+    for (const chat of targetChats) {
+      if (!chat.participants.some((p) => p.userId === userId)) {
+        throw AppError.forbidden(`Not a participant of chat ${chat.id}`);
+      }
+    }
+
+    const forwardedMessages = await prisma.$transaction(
+      targetChats.map((chat) =>
+        prisma.message.create({
+          data: {
+            chatId: chat.id,
+            senderId: userId,
+            content: original.content,
+            type: original.type,
+            mediaUrl: original.mediaUrl,
+            data: {
+              isForwarded: true,
+              originalMessageId: original.id,
+              originalSenderId: original.senderId,
+            },
+          },
+          include: {
+            sender: { select: { id: true, name: true, profileImage: true } },
+          },
+        })
+      )
+    );
+
+    await prisma.chat.updateMany({
+      where: { id: { in: targetChatIds } },
+      data: { lastMessageAt: new Date() },
+    });
+
+    logInfo(`Message ${messageId} forwarded to ${targetChats.length} chats`);
+    return { forwardedCount: forwardedMessages.length, messages: forwardedMessages };
+  }
+
+  // ============================================
+  // 26. Star / Unstar Message
+  // ============================================
+  static async toggleStarMessage(messageId, userId) {
+    const message = await prisma.message.findUnique({
+      where: { id: messageId },
+      include: { chat: { include: { participants: true } } },
+    });
+
+    if (!message) throw AppError.notFound('Message not found');
+
+    if (!message.chat.participants.some((p) => p.userId === userId)) {
+      throw AppError.forbidden('Not a participant of this chat');
+    }
+
+    const starredBy = Array.isArray(message.data?.starredBy)
+      ? message.data.starredBy
+      : [];
+    const isStarred = starredBy.includes(userId);
+
+    const newStarredBy = isStarred
+      ? starredBy.filter((id) => id !== userId)
+      : [...starredBy, userId];
+
+    const updated = await prisma.message.update({
+      where: { id: messageId },
+      data: {
+        data: {
+          ...(message.data || {}),
+          starredBy: newStarredBy,
+        },
+      },
+    });
+
+    return {
+      message: updated,
+      isStarred: !isStarred,
+    };
+  }
+
+  // ============================================
+  // 27. Get Starred Messages
+  // ============================================
+  static async getStarredMessages(userId, { page = 1, limit = 20 } = {}) {
+    const skip = (page - 1) * limit;
+
+    const where = {
+      deletedAt: null,
+      chat: {
+        participants: { some: { userId } },
+        isActive: true,
+      },
+    };
+
+    const allMessages = await prisma.message.findMany({
+      where,
+      include: {
+        sender: { select: { id: true, name: true, profileImage: true } },
+        chat: { select: { id: true, name: true, type: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 500,
+    });
+
+    const starred = allMessages.filter((m) => {
+      const starredBy = Array.isArray(m.data?.starredBy) ? m.data.starredBy : [];
+      return starredBy.includes(userId);
+    });
+
+    const total = starred.length;
+    const paginated = starred.slice(skip, skip + limit);
+
+    return {
+      data: paginated,
+      pagination: helpers.buildPagination(page, limit, total),
+    };
+  }
+
+  // ============================================
+  // 28. Export Chat
+  // ============================================
+  static async exportChat(chatId, userId, { format = 'json' } = {}) {
+    const participant = await prisma.chatParticipant.findUnique({
+      where: { chatId_userId: { chatId, userId } },
+    });
+    if (!participant) throw AppError.forbidden('Not a participant');
+
+    const chat = await prisma.chat.findUnique({
+      where: { id: chatId },
+      include: {
+        participants: {
+          include: {
+            user: { select: { id: true, name: true, phone: true } },
+          },
+        },
+      },
+    });
+
+    if (!chat) throw AppError.notFound('Chat not found');
+
+    const messages = await prisma.message.findMany({
+      where: {
+        chatId,
+        deletedAt: null,
+      },
+      include: {
+        sender: { select: { id: true, name: true } },
+      },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    const exportData = {
+      exportedAt: new Date().toISOString(),
+      exportedBy: userId,
+      chat: {
+        id: chat.id,
+        type: chat.type,
+        name: chat.name,
+        createdAt: chat.createdAt,
+        participants: chat.participants.map((p) => ({
+          id: p.user.id,
+          name: p.user.name,
+          phone: p.user.phone,
+        })),
+      },
+      totalMessages: messages.length,
+      messages: messages.map((m) => ({
+        id: m.id,
+        senderId: m.senderId,
+        senderName: m.sender.name,
+        content: m.content,
+        type: m.type,
+        mediaUrl: m.mediaUrl,
+        isEdited: m.isEdited,
+        createdAt: m.createdAt,
+      })),
+    };
+
+    logInfo(`Chat ${chatId} exported by ${userId} (${messages.length} messages)`);
+
+    return exportData;
   }
 }
 
-module.exports = CallService;
+module.exports = ChatService;

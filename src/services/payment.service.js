@@ -1,194 +1,241 @@
 // ============================================
-// Payment Service — Razorpay
+// Payment Service — Google Play Billing
 // ============================================
 
-const crypto = require('crypto');
+const { google } = require('googleapis');
 const { prisma } = require('../config/database');
 const config = require('../config');
 const AppError = require('../utils/AppError');
 const WalletService = require('./wallet.service');
-const { initRazorpay } = require('../config/razorpay');
 const { logInfo, logError } = require('../utils/logger');
 
 class PaymentService {
   // ============================================
-  // 1. CREATE ORDER (for coin package)
+  // Google Play API client
   // ============================================
-  static async createOrder(userId, packageId) {
-    const razorpay = initRazorpay();
-    if (!razorpay) throw AppError.badRequest('Payment gateway not configured');
-
-    const pkg = await prisma.coinPackage.findUnique({ where: { id: packageId } });
-    if (!pkg || !pkg.isActive) throw AppError.notFound('Package not found');
-
-    const amountInPaise = Math.round(pkg.price * 100);
-
-    const order = await razorpay.orders.create({
-      amount: amountInPaise,
-      currency: 'INR',
-      receipt: `pkg_${packageId}_${Date.now()}`,
-      notes: {
-        userId,
-        packageId,
-        coins: String(pkg.coins + (pkg.bonusCoins || 0)),
+  static getAndroidPublisher() {
+    const auth = new google.auth.GoogleAuth({
+      credentials: {
+        client_email: config.GOOGLE_PLAY.SERVICE_ACCOUNT_EMAIL,
+        private_key: config.GOOGLE_PLAY.PRIVATE_KEY.replace(/\\n/g, '\n'),
       },
+      scopes: ['https://www.googleapis.com/auth/androidpublisher'],
     });
 
-    // Save pending transaction
-    await prisma.transaction.create({
-      data: {
-        userId,
-        type: 'CREDIT',
-        category: 'COIN_PURCHASE',
-        amount: pkg.price,
-        coins: pkg.coins + (pkg.bonusCoins || 0),
-        description: `Purchase: ${pkg.name}`,
-        status: 'PENDING',
-        referenceId: order.id,
-        referenceModel: 'RazorpayOrder',
-        gatewayResponse: { razorpayOrderId: order.id },
-      },
+    return google.androidpublisher({
+      version: 'v3',
+      auth,
     });
-
-    logInfo(`Order created: ${order.id} for user ${userId}`);
-
-    return {
-      orderId: order.id,
-      amount: order.amount,
-      currency: order.currency,
-      keyId: config.RAZORPAY.KEY_ID,
-      packageName: pkg.name,
-      coins: pkg.coins + (pkg.bonusCoins || 0),
-    };
   }
 
   // ============================================
-  // 2. VERIFY PAYMENT (client callback)
+  // VERIFY SUBSCRIPTION (for coin packages or recurring)
   // ============================================
-  static async verifyPayment(userId, data) {
-    const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = data;
+  static async verifySubscription(userId, data) {
+    const { productId, purchaseToken, packageName } = data;
 
-    if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
-      throw AppError.badRequest('Missing payment details');
+    if (!productId || !purchaseToken) {
+      throw AppError.badRequest('productId and purchaseToken required');
     }
 
-    // Verify signature
-    const body = razorpay_order_id + '|' + razorpay_payment_id;
-    const expectedSignature = crypto
-      .createHmac('sha256', config.RAZORPAY.KEY_SECRET)
-      .update(body)
-      .digest('hex');
+    try {
+      const androidPublisher = this.getAndroidPublisher();
 
-    if (expectedSignature !== razorpay_signature) {
-      await prisma.transaction.updateMany({
-        where: { referenceId: razorpay_order_id },
-        data: { status: 'FAILED', failureReason: 'Invalid signature' },
+      // Verify with Google Play
+      const response = await androidPublisher.purchases.subscriptions.get({
+        packageName: packageName || config.GOOGLE_PLAY.PACKAGE_NAME,
+        subscriptionId: productId,
+        token: purchaseToken,
       });
-      throw AppError.badRequest('Payment verification failed');
-    }
 
-    // Find transaction
-    const transaction = await prisma.transaction.findFirst({
-      where: { referenceId: razorpay_order_id, userId },
-    });
+      const purchase = response.data;
 
-    if (!transaction) throw AppError.notFound('Transaction not found');
+      // Check expiry time
+      const expiryTime = parseInt(purchase.expiryTimeMillis);
+      if (expiryTime < Date.now()) {
+        throw AppError.badRequest('Subscription expired');
+      }
 
-    if (transaction.status === 'COMPLETED') {
-      return { success: true, message: 'Already credited' };
-    }
-
-    // Credit coins atomically
-    const coinsToCredit = transaction.coins;
-
-    await prisma.$transaction(async (tx) => {
-      // Update transaction
-      await tx.transaction.update({
-        where: { id: transaction.id },
-        data: {
+      // Check if already processed
+      const existing = await prisma.transaction.findFirst({
+        where: {
+          userId,
+          referenceId: purchaseToken,
           status: 'COMPLETED',
-          gatewayResponse: {
-            ...(transaction.gatewayResponse || {}),
-            razorpayPaymentId: razorpay_payment_id,
-            verifiedAt: new Date().toISOString(),
-          },
         },
       });
 
-      // Update wallet
-      let wallet = await tx.wallet.findUnique({ where: { userId } });
-      if (!wallet) {
-        wallet = await tx.wallet.create({
-          data: { userId, balance: 0, coins: 0 },
-        });
+      if (existing) {
+        return { success: true, message: 'Already processed' };
       }
 
-      await tx.wallet.update({
-        where: { userId },
-        data: {
-          coins: { increment: coinsToCredit },
-          totalEarned: { increment: transaction.amount },
-        },
+      // Find package by productId
+      const pkg = await prisma.coinPackage.findFirst({
+        where: { googlePlayProductId: productId, isActive: true },
       });
 
-      await tx.user.update({
-        where: { id: userId },
-        data: { totalCoins: { increment: coinsToCredit } },
+      if (!pkg) throw AppError.notFound('Package not found');
+
+      const totalCoins = pkg.coins + (pkg.bonusCoins || 0);
+
+      // Credit coins
+      await prisma.$transaction(async (tx) => {
+        let wallet = await tx.wallet.findUnique({ where: { userId } });
+        if (!wallet) {
+          wallet = await tx.wallet.create({
+            data: { userId, balance: 0, coins: 0 },
+          });
+        }
+
+        await tx.wallet.update({
+          where: { userId },
+          data: {
+            coins: { increment: totalCoins },
+            totalEarned: { increment: totalCoins },
+          },
+        });
+
+        await tx.user.update({
+          where: { id: userId },
+          data: { totalCoins: { increment: totalCoins } },
+        });
+
+        await tx.transaction.create({
+          data: {
+            userId,
+            type: 'CREDIT',
+            category: 'COIN_PURCHASE',
+            amount: pkg.price,
+            coins: totalCoins,
+            description: `Purchase: ${pkg.name} (Google Play)`,
+            status: 'COMPLETED',
+            referenceId: purchaseToken,
+            referenceModel: 'GooglePlay',
+            gatewayResponse: {
+              productId,
+              purchaseToken,
+              orderId: purchase.orderId,
+              purchaseTime: purchase.startTimeMillis,
+            },
+          },
+        });
       });
-    });
 
-    logInfo(`Payment verified: ${razorpay_payment_id} — ${coinsToCredit} coins credited`);
+      logInfo(`Google Play purchase verified: ${productId} for user ${userId}`);
+      return { success: true, coinsCredited: totalCoins };
 
-    return {
-      success: true,
-      coinsCredited: coinsToCredit,
-      message: `${coinsToCredit} coins added to your wallet`,
-    };
+    } catch (error) {
+      logError('Google Play verification failed', error.message);
+      throw AppError.badRequest(`Verification failed: ${error.message}`);
+    }
   }
 
   // ============================================
-  // 3. WEBHOOK HANDLER
+  // VERIFY ONE-TIME PURCHASE (for consumable coins)
   // ============================================
-  static async handleWebhook(rawBody, signature) {
-    const expectedSignature = crypto
-      .createHmac('sha256', config.RAZORPAY.WEBHOOK_SECRET)
-      .update(rawBody)
-      .digest('hex');
+  static async verifyProductPurchase(userId, data) {
+    const { productId, purchaseToken, packageName } = data;
 
-    if (expectedSignature !== signature) {
-      throw AppError.badRequest('Invalid webhook signature');
+    if (!productId || !purchaseToken) {
+      throw AppError.badRequest('productId and purchaseToken required');
     }
 
-    const event = JSON.parse(rawBody.toString());
-    logInfo(`Webhook received: ${event.event}`);
+    try {
+      const androidPublisher = this.getAndroidPublisher();
 
-    if (event.event === 'payment.captured') {
-      const payment = event.payload.payment.entity;
-      const orderId = payment.order_id;
-
-      const transaction = await prisma.transaction.findFirst({
-        where: { referenceId: orderId, status: 'PENDING' },
+      const response = await androidPublisher.purchases.products.get({
+        packageName: packageName || config.GOOGLE_PLAY.PACKAGE_NAME,
+        productId,
+        token: purchaseToken,
       });
 
-      if (transaction) {
-        // Credit if not already done
-        await this.verifyPayment(transaction.userId, {
-          razorpay_order_id: orderId,
-          razorpay_payment_id: payment.id,
-          razorpay_signature: signature,
-        });
+      const purchase = response.data;
+
+      // Check purchase state (0 = purchased)
+      if (purchase.purchaseState !== 0) {
+        throw AppError.badRequest('Purchase not completed');
       }
-    } else if (event.event === 'payment.failed') {
-      const payment = event.payload.payment.entity;
-      await prisma.transaction.updateMany({
-        where: { referenceId: payment.order_id },
-        data: {
-          status: 'FAILED',
-          failureReason: payment.error_description || 'Payment failed',
+
+      // Check if already processed
+      const existing = await prisma.transaction.findFirst({
+        where: {
+          userId,
+          referenceId: purchaseToken,
+          status: 'COMPLETED',
         },
       });
-    }
 
+      if (existing) {
+        return { success: true, message: 'Already processed' };
+      }
+
+      // Find package
+      const pkg = await prisma.coinPackage.findFirst({
+        where: { googlePlayProductId: productId, isActive: true },
+      });
+
+      if (!pkg) throw AppError.notFound('Package not found');
+
+      const totalCoins = pkg.coins + (pkg.bonusCoins || 0);
+
+      // Credit coins (same as subscription)
+      await prisma.$transaction(async (tx) => {
+        let wallet = await tx.wallet.findUnique({ where: { userId } });
+        if (!wallet) {
+          wallet = await tx.wallet.create({
+            data: { userId, balance: 0, coins: 0 },
+          });
+        }
+
+        await tx.wallet.update({
+          where: { userId },
+          data: {
+            coins: { increment: totalCoins },
+            totalEarned: { increment: totalCoins },
+          },
+        });
+
+        await tx.user.update({
+          where: { id: userId },
+          data: { totalCoins: { increment: totalCoins } },
+        });
+
+        await tx.transaction.create({
+          data: {
+            userId,
+            type: 'CREDIT',
+            category: 'COIN_PURCHASE',
+            amount: pkg.price,
+            coins: totalCoins,
+            description: `Purchase: ${pkg.name} (Google Play)`,
+            status: 'COMPLETED',
+            referenceId: purchaseToken,
+            referenceModel: 'GooglePlay',
+            gatewayResponse: {
+              productId,
+              purchaseToken,
+              orderId: purchase.orderId,
+              purchaseTime: purchase.purchaseTimeMillis,
+            },
+          },
+        });
+      });
+
+      return { success: true, coinsCredited: totalCoins };
+
+    } catch (error) {
+      logError('Google Play product verification failed', error.message);
+      throw AppError.badRequest(`Verification failed: ${error.message}`);
+    }
+  }
+
+  // ============================================
+  // Handle RTDN (Real-time developer notifications)
+  // ============================================
+  static async handleRTDN(payload) {
+    // यहाँ Google Cloud Pub/Sub से आने वाले notifications handle करो
+    // (subscription renewals, cancellations, etc.)
+    logInfo('RTDN received', payload);
     return { received: true };
   }
 }

@@ -110,3 +110,4 @@ GoogleService-Info.plist
 tmp/
 temp/
 *.tmp
+fix.sql
